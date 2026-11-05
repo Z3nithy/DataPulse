@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: sqlite:///ci.db
+      SECRET_KEY: ci-only-secret-key-with-at-least-32-characters
+      SMTP_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install backend dependencies
+        run: python -m pip install -r requirements.txt
+        working-directory: backend
+      - name: Run backend tests
+        run: python -m unittest discover -s tests -v
+        working-directory: backend
+      - name: Validate migrations
+        run: |
+          python -m alembic upgrade head
+          python -m alembic check
+        working-directory: backend
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.18.0"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+      - name: Run unit tests
+        run: npm test
+        working-directory: frontend
+      - name: Run lint checks
+        run: |
+          npx oxlint .
+          npx eslint .
+        working-directory: frontend
+      - name: Build frontend
+        run: npm run build
+        working-directory: frontend
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - name: Run end-to-end tests
+        run: npm run test:e2e
+        working-directory: frontend
+        env:
+          DATAPULSE_PYTHON: python

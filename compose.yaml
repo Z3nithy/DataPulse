@@ -1,0 +1,45 @@
+services:
+  migrate:
+    build: ./backend
+    env_file: ./backend/.env
+    environment: &backend-environment
+      DATABASE_URL: sqlite:////data/datapulse.db
+      WORKER_LOCK_PATH: /data/.worker.lock
+    volumes: [datapulse-data:/data]
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    restart: "no"
+  api:
+    build: ./backend
+    env_file: ./backend/.env
+    environment: *backend-environment
+    volumes: [datapulse-data:/data]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+  worker:
+    build: ./backend
+    env_file: ./backend/.env
+    environment: *backend-environment
+    volumes: [datapulse-data:/data]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+    command: ["python", "-m", "worker"]
+    restart: unless-stopped
+  web:
+    build: ./frontend
+    environment:
+      APP_ADDRESS: ${APP_ADDRESS:-localhost}
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes: [caddy-data:/data, caddy-config:/config]
+    depends_on:
+      api: {condition: service_healthy}
+    restart: unless-stopped
+volumes:
+  datapulse-data:
+  caddy-data:
+  caddy-config:
