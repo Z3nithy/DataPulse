@@ -13,25 +13,57 @@ class Input(BaseModel):
 
 class Register(Input):
     name: str = Field(min_length=2, max_length=100)
-    email: str = Field(min_length=3, max_length=254)
+    username: str = Field(min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9._-]+$")
+    email: str | None = Field(default=None, min_length=3, max_length=254)
     password: Password = Field(min_length=10, max_length=128)
+
+    @field_validator("username")
+    @classmethod
+    def username_normalized(cls, value: str) -> str:
+        return value.lower()
 
     @field_validator("email")
     @classmethod
-    def email_valid(cls, value: str) -> str:
+    def email_valid(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value):
             raise ValueError("Email invalido")
         return value.lower()
 
 
 class Login(Input):
-    email: str = Field(max_length=254)
+    username: str = Field(min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9._-]+$")
     password: Password = Field(min_length=1, max_length=128)
+
+    @field_validator("username")
+    @classmethod
+    def username_normalized(cls, value: str) -> str:
+        return value.lower()
 
 
 class PasswordChange(Input):
     current_password: Password = Field(min_length=1, max_length=128)
     new_password: Password = Field(min_length=10, max_length=128)
+
+
+class ProfileUpdate(Input):
+    username: str = Field(min_length=3, max_length=32, pattern=r"^[a-zA-Z0-9._-]+$")
+    email: str | None = Field(default=None, min_length=3, max_length=254)
+
+    @field_validator("username")
+    @classmethod
+    def username_normalized(cls, value: str) -> str:
+        return value.lower()
+
+    @field_validator("email")
+    @classmethod
+    def email_valid(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", value):
+            raise ValueError("Email invalido")
+        return value.lower()
 
 
 class RoleUpdate(Input):

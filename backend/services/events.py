@@ -21,5 +21,5 @@ def notify(db: Session, kind: str, title: str, message: str, href: str,
         statement = statement.where(User.id == user_id)
     for user in db.scalars(statement):
         db.add(Notification(user_id=user.id, kind=kind, title=title[:200], message=message, href=href))
-        if email and SMTP_ENABLED:
+        if email and SMTP_ENABLED and user.email:
             db.add(EmailDelivery(user_id=user.id, subject=title[:200], body=message, report_id=report_id))

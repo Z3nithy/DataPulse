@@ -43,10 +43,10 @@
 [data-theme='light'] {
   color-scheme: light;
   --bg: #f5f7fb;
-  --surface: #ffffff;
-  --card: #ffffff;
-  --card-soft: #f8fafc;
-  --sidebar: #ffffff;
+  --surface: #ffffffed;
+  --card: #fffffff0;
+  --card-soft: #f8fafaf0;
+  --sidebar: #fffffff8;
   --text: #17213a;
   --muted: #52647e;
   --subtle: #64748b;
@@ -284,7 +284,9 @@ svg.lucide {
 .app-shell {
   --sidebar-width: 244px;
   min-height: 100vh;
-  background: radial-gradient(ellipse at 60% -30%, #6366f10a, transparent 55%), var(--bg);
+  position: relative;
+  z-index: 1;
+  background: radial-gradient(ellipse at 60% -30%, #6366f10a, transparent 55%);
 }
 .app-shell.sidebar-is-collapsed {
   --sidebar-width: 76px;
@@ -1551,6 +1553,18 @@ summary {
   border-color: #6366f130;
   color: var(--primary-text);
 }
+.temporary-password {
+  overflow-wrap: anywhere;
+  padding: 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--primary-text);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: 0.4px;
+}
 .error-list {
   padding: 15px 20px;
   color: var(--error);
@@ -1764,6 +1778,118 @@ summary {
 .onboarding-reopen {
   margin-bottom: 16px;
 }
+.product-tour-invite {
+  display: grid;
+  justify-items: center;
+  gap: 18px;
+  padding-top: 8px;
+  text-align: center;
+}
+.product-tour-invite > p {
+  max-width: 390px;
+  margin: 0;
+  font-size: 12px;
+}
+.product-tour-dimmer {
+  position: fixed;
+  z-index: 10000;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+}
+.product-tour-spotlight {
+  position: fixed;
+  z-index: 10001;
+  border: 2px solid var(--primary-text);
+  border-radius: 12px;
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary), transparent 78%);
+  pointer-events: none;
+  transition:
+    top 0.18s ease,
+    left 0.18s ease,
+    width 0.18s ease,
+    height 0.18s ease;
+}
+.product-tour-tooltip {
+  position: fixed;
+  z-index: 10002;
+  width: min(390px, calc(100vw - 32px));
+  padding: 21px;
+  border: 1px solid var(--border-strong);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 18px 60px #00000045;
+  color: var(--text);
+}
+.product-tour-icon {
+  display: grid;
+  width: 48px;
+  height: 48px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--primary-text), transparent 68%);
+  border-radius: 14px;
+  color: var(--primary-text);
+  background: var(--primary-soft);
+}
+.product-tour-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 20px;
+}
+.product-tour-progress {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  color: var(--subtle);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.7px;
+}
+.product-tour-progress .product-tour-icon {
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+}
+.product-tour-progress-bar {
+  height: 4px;
+  margin: 14px 0 17px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: var(--border-strong);
+}
+.product-tour-progress-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--primary);
+  transition: width 0.2s ease;
+}
+.product-tour-section {
+  margin: 0 0 5px;
+  color: var(--primary-text);
+  font-size: 10px;
+  font-weight: 600;
+}
+.product-tour-tooltip h2 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+}
+.product-tour-description {
+  margin: 9px 0 0;
+  font-size: 12px;
+  line-height: 1.7;
+}
+.product-tour-tooltip .product-tour-actions {
+  margin-top: 18px;
+}
+.product-tour-tooltip .product-tour-actions .button {
+  min-width: 118px;
+}
 .onboarding-steps {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -1907,11 +2033,15 @@ summary {
   padding: 55px;
   background:
     radial-gradient(ellipse at 15% 50%, #6366f111, transparent 55%),
-    radial-gradient(ellipse at 90% 15%, #8b5cf108, transparent 50%), var(--bg);
+    radial-gradient(ellipse at 90% 15%, #8b5cf108, transparent 50%),
+    color-mix(in srgb, var(--bg) 48%, transparent);
   position: relative;
+  z-index: 1;
 }
 .auth-story {
   max-width: 490px;
+  position: relative;
+  z-index: 1;
 }
 .auth-story .brand {
   margin-bottom: 65px;
@@ -1968,6 +2098,8 @@ summary {
 .auth-card {
   width: 390px;
   padding: 30px;
+  position: relative;
+  z-index: 1;
   border: 1px solid var(--border-strong);
   border-radius: 14px;
   background: linear-gradient(160deg, var(--surface), var(--card-soft));
@@ -1979,6 +2111,177 @@ summary {
   justify-content: space-between;
   gap: 10px;
   margin-bottom: 23px;
+}
+.auth-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.auth-guide-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  color: var(--primary-text);
+  background: var(--primary-soft);
+  font-size: 9px;
+  font-weight: 650;
+  letter-spacing: 0.6px;
+  cursor: pointer;
+  transition:
+    background 0.18s ease,
+    border-color 0.18s ease;
+}
+.auth-guide-button:hover {
+  border-color: var(--primary-text);
+  background: color-mix(in srgb, var(--primary-soft), var(--primary-text) 10%);
+}
+.demo-guide-intro,
+.demo-guide-status {
+  font-size: 12px;
+  line-height: 1.7;
+}
+.demo-guide-intro {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: start;
+  gap: 13px;
+  margin: 4px 0 20px;
+}
+.demo-guide-intro p {
+  margin: 5px 0 0;
+  color: var(--muted);
+}
+.demo-guide-icon {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--primary-text), transparent 68%);
+  border-radius: 12px;
+  color: var(--primary-text);
+  background: var(--primary-soft);
+}
+.demo-guide-kicker {
+  color: var(--primary-text);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.65px;
+}
+.demo-guide-content {
+  margin-top: 8px;
+}
+.demo-credentials {
+  display: grid;
+  gap: 9px;
+  margin: 0;
+}
+.demo-credential {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--card-soft);
+}
+.demo-credential dt,
+.demo-role dt {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 550;
+}
+.demo-credential dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.demo-credentials code {
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+.demo-copy-button {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  min-width: 62px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--primary-text);
+  background: var(--surface);
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.demo-copy-button:hover {
+  border-color: var(--primary-text);
+  background: var(--primary-soft);
+}
+.demo-role {
+  display: grid;
+  gap: 4px;
+  padding: 3px 2px;
+}
+.demo-role dd {
+  margin: 0;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 1.6;
+}
+.demo-copy-status {
+  margin: 10px 0 0;
+  color: var(--success);
+  font-size: 10px;
+}
+.demo-guide-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 14px 0 17px;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--warning), transparent 72%);
+  border-radius: 9px;
+  color: var(--warning);
+  font-size: 11px;
+  line-height: 1.6;
+  background: color-mix(in srgb, var(--warning), transparent 94%);
+}
+.demo-guide-warning svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+.demo-guide-warning p {
+  margin: 0;
+}
+.demo-guide-content .button {
+  width: 100%;
+}
+.demo-guide-retry {
+  margin-top: 12px;
+}
+@media (max-width: 520px) {
+  .demo-guide-dialog .dialog-body {
+    padding: 20px;
+  }
+  .demo-guide-intro {
+    grid-template-columns: 36px minmax(0, 1fr);
+    gap: 10px;
+  }
+  .demo-guide-icon {
+    width: 36px;
+    height: 36px;
+  }
+  .demo-credential {
+    padding: 11px;
+  }
+  .demo-credential dd {
+    font-size: 11px;
+  }
 }
 .auth-card h2 {
   font-size: 23px;

@@ -10,6 +10,10 @@ directory = tempfile.TemporaryDirectory(prefix="datapulse-e2e-")
 os.environ["DATABASE_URL"] = "sqlite:///" + str(Path(directory.name) / "e2e.db")
 os.environ["SECRET_KEY"] = secrets.token_urlsafe(48)
 os.environ["SMTP_ENABLED"] = "false"
+os.environ["DEMO_MODE"] = "true"
+os.environ["DEMO_USERNAME"] = "demo"
+os.environ["DEMO_EMAIL"] = "demo@example.test"
+os.environ["DEMO_PASSWORD"] = "Portfolio-demo-password-123"
 os.environ["CORS_ORIGINS"] = "http://127.0.0.1:18771"
 os.environ["API_ALLOWED_HOSTS"] = ""
 os.environ["WORKER_LOCK_PATH"] = str(Path(directory.name) / ".worker.lock")

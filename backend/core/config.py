@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -20,6 +21,18 @@ API_ALLOWED_HOSTS = {v.strip().lower() for v in os.getenv(
 ).split(",") if v.strip()}
 MAX_IMPORT_BYTES = 5 * 1024 * 1024
 MAX_ROWS = 10000
+
+DEMO_MODE = os.getenv("DEMO_MODE", "false").lower() == "true"
+DEMO_USERNAME = os.getenv("DEMO_USERNAME", "demo").strip().lower()
+DEMO_EMAIL = os.getenv("DEMO_EMAIL", "").strip().lower() or None
+DEMO_PASSWORD = os.getenv("DEMO_PASSWORD", "")
+if DEMO_MODE and (
+    not re.fullmatch(r"[a-z0-9._-]{3,32}", DEMO_USERNAME)
+    or not 10 <= len(DEMO_PASSWORD) <= 128
+):
+    raise RuntimeError(
+        "DEMO_MODE requer DEMO_USERNAME valido e DEMO_PASSWORD entre 10 e 128 caracteres."
+    )
 
 SMTP_ENABLED = os.getenv("SMTP_ENABLED", "false").lower() == "true"
 SMTP_HOST = os.getenv("SMTP_HOST", "")

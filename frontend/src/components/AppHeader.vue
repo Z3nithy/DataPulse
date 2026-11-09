@@ -1,5 +1,6 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { gsap } from 'gsap'
 import { useRoute } from 'vue-router'
 import {
   Bell,
@@ -12,6 +13,7 @@ import {
   LogOut,
   Settings,
   ExternalLink,
+  BookOpen,
   CircleAlert,
   CheckCheck,
   X,
@@ -25,7 +27,7 @@ import DateRangePicker from './ui/DateRangePicker.vue'
 import GlobalSearch from './GlobalSearch.vue'
 import LoadingState from './ui/LoadingState.vue'
 import Notification from './ui/Notification.vue'
-defineEmits(['menu'])
+const emit = defineEmits(['menu', 'start-tour'])
 const props = defineProps({ menuOpen: Boolean })
 const route = useRoute()
 const auth = useAuthStore()
@@ -52,6 +54,10 @@ useReveal(profile, () => profileOpen.value)
 const current = computed(
   () => navigation.find((item) => item.path === route.meta.section)?.label || 'Workspace',
 )
+function startTour() {
+  profile.value.open = false
+  emit('start-tour')
+}
 async function showNotifications() {
   if (notificationsOpen.value) {
     closeNotifications()
@@ -95,10 +101,52 @@ async function markRead(item) {
 async function signOut() {
   signingOut.value = true
   error.value = ''
+  const workspace = document.querySelector('.app-shell')
+  const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches
   try {
-    await post('/auth/logout', {})
+    const request = post('/auth/logout', {})
+    if (workspace && !reduceMotion) {
+      const exit = gsap.to(workspace, {
+        autoAlpha: 0,
+        scale: 0.985,
+        filter: 'blur(8px)',
+        transformOrigin: '50% 50%',
+        duration: 0.38,
+        ease: 'power2.in',
+      })
+      await Promise.all([request, exit.then()])
+    } else {
+      await request
+    }
     auth.logout()
+    if (!reduceMotion) {
+      await nextTick()
+      gsap.fromTo(
+        '.auth-story, .auth-card',
+        { autoAlpha: 0, y: 18, filter: 'blur(6px)' },
+        {
+          autoAlpha: 1,
+          y: 0,
+          filter: 'blur(0px)',
+          duration: 0.42,
+          stagger: 0.08,
+          ease: 'power2.out',
+          clearProps: 'filter,transform,opacity,visibility',
+        },
+      )
+    }
   } catch (exc) {
+    if (workspace?.isConnected && !reduceMotion) {
+      gsap.killTweensOf(workspace)
+      await gsap.to(workspace, {
+        autoAlpha: 1,
+        scale: 1,
+        filter: 'blur(0px)',
+        duration: 0.25,
+        ease: 'power2.out',
+        clearProps: 'filter,transform,opacity,visibility',
+      })
+    }
     error.value = exc.message
   } finally {
     signingOut.value = false
@@ -305,7 +353,8 @@ onBeforeUnmount(() => {
         </summary>
         <div class="dropdown-menu" data-reveal>
           <strong>{{ auth.user.name }}</strong
-          ><small>{{ auth.user.email }}</small
+          ><small>@{{ auth.user.username }}</small
+          ><small v-if="auth.user.email">{{ auth.user.email }}</small
           ><span class="badge">{{
             { admin: 'Administrador', editor: 'Editor', viewer: 'Leitor' }[auth.user.role]
           }}</span>
@@ -313,6 +362,8 @@ onBeforeUnmount(() => {
           <Notification v-if="error" kind="error" :message="error" @dismiss="error = ''" />
           <RouterLink to="/settings" @click="profile.open = false"
             ><Settings :size="16" /> Configurações</RouterLink
+          ><button @click="startTour"
+            ><BookOpen :size="16" /> Fazer tour do sistema</button
           ><a :href="docsUrl" target="_blank" rel="noopener"
             ><ExternalLink :size="16" /> Documentação da API</a
           ><button :disabled="signingOut" @click="signOut"

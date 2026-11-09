@@ -1,6 +1,7 @@
 <script setup>
 import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { gsap } from 'gsap'
+import { useRouter } from 'vue-router'
 import {
   Activity,
   ArrowRight,
@@ -10,6 +11,7 @@ import {
   Sparkles,
   Sun,
   Moon,
+  BookOpen,
 } from '@lucide/vue'
 import { useAuthStore } from '@/stores/auth'
 import { api } from '@/services/api'
@@ -17,17 +19,21 @@ import { useInterfaceStore } from '@/stores/interface'
 import { pageEnter } from '@/composables/motion'
 import AppSidebar from '@/components/AppSidebar.vue'
 import AppHeader from '@/components/AppHeader.vue'
+import Backgorund from '@/components/backgorund.vue'
 import Notification from '@/components/ui/Notification.vue'
 import LoadingState from '@/components/ui/LoadingState.vue'
+import AppDialog from '@/components/ui/AppDialog.vue'
+import ProductTour from '@/components/ProductTour.vue'
 
 const auth = useAuthStore()
 const ui = useInterfaceStore()
+const router = useRouter()
 const shell = ref(null)
 let sidebarContext
 let sidebarMedia
 let priorFocus
 const mode = ref('login')
-const credentials = ref({ name: '', email: '', password: '' })
+const credentials = ref({ name: '', username: '', email: '', password: '' })
 const error = ref('')
 const busy = ref(false)
 const restoring = ref(true)
@@ -39,6 +45,14 @@ function viewportChanged(event) {
   if (!event.matches) menuOpen.value = false
 }
 const registrationOpen = ref(false)
+const guideOpen = ref(false)
+const guideBusy = ref(false)
+const guideError = ref('')
+const demoAccess = ref(null)
+const copiedField = ref('')
+const tourOpen = ref(false)
+const tourInvite = ref(false)
+let copyResetTimeout
 watch([() => ui.collapsed, () => auth.user], async () => {
   await nextTick()
   sidebarMedia?.revert()
@@ -95,9 +109,14 @@ async function submit() {
     await auth.authenticate(
       mode.value,
       mode.value === 'register'
-        ? credentials.value
-        : { email: credentials.value.email, password: credentials.value.password },
+        ? { ...credentials.value, email: credentials.value.email || null }
+        : { username: credentials.value.username, password: credentials.value.password },
     )
+    const tourKey = `datapulse-tour-${auth.user.id}`
+    if (!localStorage.getItem(tourKey)) {
+      tourInvite.value = true
+      tourOpen.value = true
+    }
     registrationOpen.value = false
     mode.value = 'login'
     credentials.value.password = ''
@@ -111,6 +130,19 @@ async function submit() {
   }
 }
 
+function startTour() {
+  tourInvite.value = false
+  tourOpen.value = true
+  router.push('/dashboard')
+}
+function closeTour(status) {
+  localStorage.setItem(`datapulse-tour-${auth.user.id}`, status)
+  tourOpen.value = false
+}
+function beginTour() {
+  tourInvite.value = false
+  router.push('/dashboard')
+}
 function expired() {
   auth.logout()
   error.value = 'Sessao expirada ou acesso revogado. Entre novamente.'
@@ -118,6 +150,40 @@ function expired() {
 function toggleAuthMode() {
   mode.value = mode.value === 'login' ? 'register' : 'login'
   error.value = ''
+}
+async function showDemoGuide() {
+  guideOpen.value = true
+  guideError.value = ''
+  copiedField.value = ''
+  if (demoAccess.value?.available) return
+  guideBusy.value = true
+  try {
+    demoAccess.value = (await api('/auth/demo')).data
+  } catch (exc) {
+    guideError.value = exc.message
+  } finally {
+    guideBusy.value = false
+  }
+}
+async function copyDemoCredential(field, label) {
+  guideError.value = ''
+  try {
+    await navigator.clipboard.writeText(demoAccess.value[field])
+    copiedField.value = field
+    window.clearTimeout(copyResetTimeout)
+    copyResetTimeout = window.setTimeout(() => {
+      copiedField.value = ''
+    }, 1800)
+  } catch {
+    guideError.value = `Não foi possível copiar ${label}. Selecione e copie o valor manualmente.`
+  }
+}
+function useDemoCredentials() {
+  credentials.value.username = demoAccess.value.username
+  credentials.value.password = demoAccess.value.password
+  mode.value = 'login'
+  error.value = ''
+  guideOpen.value = false
 }
 onMounted(async () => {
   mobileQuery.addEventListener('change', viewportChanged)
@@ -138,12 +204,14 @@ onUnmounted(() => {
   globalThis.removeEventListener('datapulse:unauthorized', expired)
   globalThis.removeEventListener('keydown', menuKeys)
   document.body.style.overflow = ''
+  window.clearTimeout(copyResetTimeout)
   sidebarMedia?.revert()
   sidebarContext?.revert()
 })
 </script>
 
 <template>
+  <Backgorund />
   <div v-if="restoring" class="auth-screen"><LoadingState /></div>
   <div v-else-if="!auth.user" class="auth-screen">
     <section class="auth-story">
@@ -166,19 +234,31 @@ onUnmounted(() => {
         ><span><Sparkles :size="18" /> Descubra novas perspectivas</span>
       </div>
       <p class="small">
-        <ShieldCheck :size="15" /> Análises reais. Acesso seguro. Sem dados simulados.
+        <ShieldCheck :size="15" /> Dados sintéticos para demonstração. Acesso por permissões.
       </p>
     </section>
     <section class="auth-card">
       <div class="auth-card-top">
-        <span class="badge">SEU WORKSPACE DE INTELIGÊNCIA</span
-        ><button
+        <span class="badge">SEU WORKSPACE DE INTELIGÊNCIA</span>
+        <div class="auth-card-actions">
+          <button
+            v-if="mode === 'login'"
+            class="auth-guide-button"
+            type="button"
+            aria-haspopup="dialog"
+            @click="showDemoGuide"
+          >
+            <BookOpen :size="15" /> GUIA
+          </button>
+          <button
           class="icon-button"
+          type="button"
           :aria-label="ui.theme === 'dark' ? 'Ativar tema claro' : 'Ativar tema escuro'"
           @click="ui.toggleTheme"
-        >
-          <component :is="ui.theme === 'dark' ? Sun : Moon" :size="18" />
-        </button>
+          >
+            <component :is="ui.theme === 'dark' ? Sun : Moon" :size="18" />
+          </button>
+        </div>
       </div>
       <h2>{{ mode === 'login' ? 'Acesse seu workspace' : 'Crie sua conta' }}</h2>
       <p class="muted">
@@ -198,11 +278,18 @@ onUnmounted(() => {
             minlength="2"
             maxlength="100" /></label
         ><label
-          >Email<input
-            v-model="credentials.email"
-            type="email"
+          >Usuário<input
+            v-model="credentials.username"
             autocomplete="username"
             required
+            minlength="3"
+            maxlength="32"
+            pattern="[A-Za-z0-9._-]+" /></label
+        ><label v-if="mode === 'register'"
+          >Email de contato (opcional)<input
+            v-model="credentials.email"
+            type="email"
+            autocomplete="email"
             maxlength="254" /></label
         ><label
           >Senha<input
@@ -234,8 +321,91 @@ onUnmounted(() => {
         }}
       </button>
     </section>
+    <AppDialog
+      class="demo-guide-dialog"
+      :open="guideOpen"
+      title="Acesso de demonstração"
+      @close="guideOpen = false"
+    >
+      <div class="demo-guide-intro">
+        <span class="demo-guide-icon"><BookOpen :size="19" /></span>
+        <div>
+          <span class="demo-guide-kicker">CONTA PÚBLICA · PERMISSÃO EDITOR</span>
+          <p>
+            Use a conta pública para explorar o workspace. As alterações ficam visíveis para todos
+            que compartilham este banco.
+          </p>
+        </div>
+      </div>
+      <p v-if="guideBusy" class="demo-guide-status" role="status">Carregando acesso...</p>
+      <Notification
+        v-if="guideError"
+        :message="guideError"
+        kind="error"
+        @dismiss="guideError = ''"
+      />
+      <div v-if="demoAccess?.available" class="demo-guide-content">
+        <dl class="demo-credentials">
+          <div class="demo-credential">
+            <dt>Usuário</dt>
+            <dd><code>{{ demoAccess.username }}</code></dd>
+            <button
+              class="demo-copy-button"
+              type="button"
+              :aria-label="copiedField === 'username' ? 'Usuário copiado' : 'Copiar usuário'"
+              @click="copyDemoCredential('username', 'o usuário')"
+            >
+              {{ copiedField === 'username' ? 'Copiado' : 'Copiar' }}
+            </button>
+          </div>
+          <div class="demo-credential">
+            <dt>Senha</dt>
+            <dd><code>{{ demoAccess.password }}</code></dd>
+            <button
+              class="demo-copy-button"
+              type="button"
+              :aria-label="copiedField === 'password' ? 'Senha copiada' : 'Copiar senha'"
+              @click="copyDemoCredential('password', 'a senha')"
+            >
+              {{ copiedField === 'password' ? 'Copiado' : 'Copiar' }}
+            </button>
+          </div>
+          <div class="demo-role">
+            <dt>O que você pode fazer</dt>
+            <dd>Criar e explorar fontes, datasets e indicadores.</dd>
+          </div>
+        </dl>
+        <p v-if="copiedField" class="demo-copy-status" role="status">Credencial copiada.</p>
+        <div class="demo-guide-warning">
+          <ShieldCheck :size="16" />
+          <p>Esta conta é compartilhada. Não use dados reais ou confidenciais.</p>
+        </div>
+        <button class="button" type="button" @click="useDemoCredentials">
+          Preencher acesso demo <ArrowRight :size="17" />
+        </button>
+      </div>
+      <p v-else-if="demoAccess && !guideBusy" class="muted demo-guide-status" role="status">
+        A conta pública ainda não está disponível. Peça a um administrador para habilitar o modo demo
+        ou criar/reativar a conta em Configurações.
+      </p>
+      <button
+        v-if="guideError"
+        class="text-button demo-guide-retry"
+        type="button"
+        :disabled="guideBusy"
+        @click="showDemoGuide"
+      >
+        Tentar novamente
+      </button>
+    </AppDialog>
   </div>
-  <div v-else ref="shell" class="app-shell" :class="{ 'sidebar-is-collapsed': ui.collapsed }">
+  <div
+    v-else
+    ref="shell"
+    class="app-shell"
+    :class="{ 'sidebar-is-collapsed': ui.collapsed }"
+    :inert="tourOpen && !tourInvite || undefined"
+  >
     <a class="skip-link" href="#main-content">Pular para o conteúdo</a>
     <AppSidebar :open="menuOpen" :mobile="isMobile" @close="menuOpen = false" />
     <button
@@ -246,7 +416,11 @@ onUnmounted(() => {
       @click="menuOpen = false"
     />
     <div class="workspace" :inert="menuOpen || undefined">
-      <AppHeader :menu-open="menuOpen" @menu="menuOpen = !menuOpen" />
+      <AppHeader
+        :menu-open="menuOpen"
+        @menu="menuOpen = !menuOpen"
+        @start-tour="startTour"
+      />
       <main id="main-content" tabindex="-1">
         <RouterView v-slot="{ Component, route }"
           ><Transition :css="false" @enter="pageEnter"
@@ -258,5 +432,12 @@ onUnmounted(() => {
         ><span>Construído para decisões melhores.</span>
       </footer>
     </div>
+    <ProductTour
+      :open="tourOpen"
+      :invite="tourInvite"
+      @close="closeTour('skipped')"
+      @begin="beginTour"
+      @complete="closeTour('completed')"
+    />
   </div>
 </template>

@@ -6,6 +6,7 @@ from email.message import EmailMessage
 
 from fastapi import HTTPException
 from sqlalchemy import func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from core import config
@@ -120,6 +121,29 @@ def mark_failed(db: Session, task_id: int, message: str):
     db.commit()
 
 
+def task_failure_message(exc: Exception) -> str:
+    if isinstance(exc, HTTPException):
+        return str(exc.detail)
+    if isinstance(exc, TimeoutError):
+        return (
+            "Tempo limite excedido ao processar a tarefa. "
+            "Verifique o worker e a disponibilidade da fonte."
+        )
+    if isinstance(exc, ConnectionError):
+        return (
+            "Falha de conexao com a fonte. "
+            "Verifique a rede, o endpoint e os logs do worker."
+        )
+    if isinstance(exc, SQLAlchemyError):
+        return (
+            "Falha ao acessar o banco de dados. "
+            "Verifique a conexao e os logs do worker."
+        )
+    if isinstance(exc, ValueError):
+        return "Dados ou parametros invalidos. Revise a tarefa e consulte os logs do worker."
+    return f"Falha interna ({type(exc).__name__}). Consulte os logs do worker."
+
+
 def recover_interrupted(db: Session):
     for task_id in db.scalars(select(BackgroundTask.id).where(BackgroundTask.status == "running")).all():
         mark_failed(db, task_id, "Worker interrompido. Verifique o resultado antes de reenviar a tarefa.")
@@ -180,8 +204,7 @@ def process_task(db: Session) -> bool:
     except Exception as exc:
         db.rollback()
         logger.exception("Task failed id=%s", task_id)
-        message = str(exc.detail) if isinstance(exc, HTTPException) else "Falha no processamento. Consulte os logs do worker."
-        mark_failed(db, task_id, message)
+        mark_failed(db, task_id, task_failure_message(exc))
     return True
 
 
@@ -224,7 +247,10 @@ def process_email(db: Session) -> bool:
         send_email(delivery, user, db.get(Report, delivery.report_id) if delivery.report_id else None)
     except (OSError, smtplib.SMTPException, ValueError) as exc:
         logger.error("SMTP failed delivery=%s attempt=%s type=%s", delivery.id, delivery.attempts, type(exc).__name__)
-        delivery.error = "Falha SMTP; verifique conectividade, TLS e credenciais no servidor."
+        delivery.error = (
+            f"Falha SMTP ({type(exc).__name__}); "
+            "verifique conectividade, TLS e credenciais no servidor."
+        )
         delivery.status = "failed" if delivery.attempts >= 3 else "queued"
         delivery.next_attempt_at = utcnow() + timedelta(minutes=5 * delivery.attempts)
         if delivery.status == "failed":

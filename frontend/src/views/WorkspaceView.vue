@@ -102,8 +102,11 @@ const kpiForm = ref({ name: '', target: null })
 const reportName = ref('')
 const alertForm = ref({ name: '', kpi_id: null, operator: 'gt', threshold: 0, enabled: true })
 const editing = ref(null)
-const memberForm = ref({ name: '', email: '', password: '' })
+const memberForm = ref({ name: '', username: '', email: '', password: '' })
+const demoAccount = ref(null)
 const passwordForm = ref({ current_password: '', new_password: '' })
+const profileForm = ref({ username: auth.user.username, email: auth.user.email || '' })
+const temporaryPassword = ref(null)
 let loadGeneration = 0
 const paths = {
   sources: '/sources',
@@ -236,16 +239,18 @@ async function load() {
         : path && (currentSection !== 'settings' || auth.isAdmin)
           ? api(`${path}?page=${page.value}&page_size=${pageSize}`)
           : Promise.resolve(null)
-    const [sourceData, datasetData, kpiData, response, audit, operationStatus] = await Promise.all([
-      allPages('/sources'),
-      allPages('/datasets'),
-      allPages('/kpis'),
-      primary,
-      currentSection === 'settings' && auth.isAdmin
-        ? api('/audit?page_size=10')
-        : Promise.resolve(null),
-      currentSection === 'ingestion' ? api('/operations/status') : Promise.resolve(null),
-    ])
+    const [sourceData, datasetData, kpiData, response, audit, operationStatus, demoStatus] =
+      await Promise.all([
+        allPages('/sources'),
+        allPages('/datasets'),
+        allPages('/kpis'),
+        primary,
+        currentSection === 'settings' && auth.isAdmin
+          ? api('/audit?page_size=10')
+          : Promise.resolve(null),
+        currentSection === 'ingestion' ? api('/operations/status') : Promise.resolve(null),
+        currentSection === 'settings' && auth.isAdmin ? api('/users/demo') : Promise.resolve(null),
+      ])
     if (generation !== loadGeneration) return
     sources.value = sourceData
     datasets.value = datasetData
@@ -261,6 +266,7 @@ async function load() {
     }
     if (audit) auditRows.value = audit.data
     if (operationStatus) workerStatus.value = operationStatus.data
+    if (demoStatus) demoAccount.value = demoStatus.data
   } catch (exc) {
     if (generation === loadGeneration) showError(exc)
   } finally {
@@ -297,7 +303,7 @@ watch(
     cancelEdit()
     selectedFile.value = null
     selectedDataset.value = null
-    memberForm.value = { name: '', email: '', password: '' }
+    memberForm.value = { name: '', username: '', email: '', password: '' }
     load()
   },
   { immediate: true },
@@ -508,8 +514,57 @@ async function commitUser(user) {
 async function createMember() {
   await act(async () => {
     await post('/users', memberForm.value)
-    memberForm.value = { name: '', email: '', password: '' }
+    memberForm.value = { name: '', username: '', email: '', password: '' }
   }, 'Membro criado como leitor. Ajuste as permissoes na lista da equipe.')
+}
+async function createDemoAccount() {
+  await act(
+    () => post('/users/demo', {}),
+    'Conta pública criada. As credenciais já estão disponíveis no GUIA da tela de login.',
+  )
+}
+function confirmDemoDataRestore() {
+  confirmation.value = {
+    title: 'Restaurar dados de demonstração?',
+    message:
+      'Os registros do dataset sintético “Vendas de demonstração” serão substituídos pelos dados de exemplo. Outros datasets, fontes, relatórios e dados do workspace não serão removidos.',
+    action: restoreDemoData,
+  }
+}
+async function restoreDemoData() {
+  let restoredRecords = 0
+  await act(async () => {
+    const response = await post('/users/demo/restore-data', {})
+    restoredRecords = response.data.records
+  }, '')
+  notice.value = `${restoredRecords} registros sintéticos restaurados. Os demais dados do workspace foram preservados.`
+}
+async function saveProfile() {
+  await act(async () => {
+    const response = await api('/auth/profile', {
+      method: 'PATCH',
+      body: JSON.stringify({
+        username: profileForm.value.username,
+        email: profileForm.value.email || null,
+      }),
+    })
+    auth.user = response.data
+  }, 'Perfil atualizado.')
+}
+async function resetUserPassword(row) {
+  confirmation.value = {
+    title: 'Redefinir senha do membro?',
+    message: `Uma senha provisória será gerada para ${row.name}. As sessões existentes serão encerradas; copie a senha exibida uma única vez e compartilhe-a por um canal seguro. Oriente o membro a alterá-la ao entrar.`,
+    action: async () => {
+      await act(async () => {
+        const response = await post(`/users/${row.id}/password-reset`, {})
+        temporaryPassword.value = {
+          username: row.username,
+          password: response.data.temporary_password,
+        }
+      }, 'Senha provisória gerada. Ela será exibida somente nesta janela.')
+    },
+  }
 }
 async function changePassword() {
   await act(async () => {
@@ -597,6 +652,9 @@ async function confirmAction() {
     <div
       v-if="['analytics', 'trends', 'kpis', 'reports'].includes(section)"
       class="panel query-panel"
+      :data-tour="
+        ['analytics', 'trends', 'kpis', 'reports'].includes(section) ? section : undefined
+      "
     >
       <h2>
         {{
@@ -739,7 +797,7 @@ async function confirmAction() {
       </template>
     </div>
 
-    <div v-if="section === 'sources' && auth.canEdit" class="panel">
+    <div v-if="section === 'sources' && auth.canEdit" class="panel" data-tour="sources">
       <h2>{{ editing ? 'Editar fonte' : 'Adicionar fonte' }}</h2>
       <form @submit.prevent="createSource">
         <div class="form-grid">
@@ -781,7 +839,7 @@ async function confirmAction() {
       </form>
     </div>
 
-    <div v-if="section === 'datasets' && auth.canEdit" class="panel">
+    <div v-if="section === 'datasets' && auth.canEdit" class="panel" data-tour="datasets">
       <h2>{{ editing ? 'Editar dataset' : 'Criar dataset' }}</h2>
       <form @submit.prevent="createDataset">
         <div class="form-grid">
@@ -836,7 +894,7 @@ async function confirmAction() {
       </form>
     </div>
 
-    <div v-if="section === 'ingestion' && auth.canEdit" class="panel">
+    <div v-if="section === 'ingestion' && auth.canEdit" class="panel" data-tour="ingestion">
       <h2><UploadCloud :size="20" /> Nova importação</h2>
       <form @submit.prevent="importFile">
         <div class="form-grid">
@@ -874,7 +932,7 @@ async function confirmAction() {
       </form>
     </div>
 
-    <div v-if="section === 'alerts' && auth.canEdit" class="panel">
+    <div v-if="section === 'alerts' && auth.canEdit" class="panel" data-tour="alerts">
       <h2>Criar regra de alerta</h2>
       <form @submit.prevent="createAlert">
         <div class="form-grid">
@@ -911,7 +969,11 @@ async function confirmAction() {
       utilizamos IA ou previsoes nesta versao.
     </div>
 
-    <div v-if="paths[section] && section !== 'settings'" class="panel">
+    <div
+      v-if="paths[section] && section !== 'settings'"
+      class="panel"
+      :data-tour="section === 'insights' ? 'insights' : undefined"
+    >
       <div class="panel-heading">
         <h2>{{ section === 'ingestion' ? 'Historico de processamento' : 'Registros' }}</h2>
         <span class="muted small">{{ total }} no total</span>
@@ -1015,9 +1077,16 @@ async function confirmAction() {
               maxlength="100"
               autocomplete="off" /></label
           ><label
-            >Email<input
-              v-model="memberForm.email"
+            >Usuário<input
+              v-model="memberForm.username"
               required
+              minlength="3"
+              maxlength="32"
+              pattern="[A-Za-z0-9._-]+"
+              autocomplete="off" /></label
+          ><label
+            >Email de contato (opcional)<input
+              v-model="memberForm.email"
               type="email"
               maxlength="254"
               autocomplete="off" /></label
@@ -1034,10 +1103,54 @@ async function confirmAction() {
         <button class="button" :disabled="busy">Criar membro</button>
       </form>
     </div>
+    <div v-if="section === 'settings' && auth.isAdmin && demoAccount" class="panel">
+      <h2>Conta pública para demonstração</h2>
+      <p class="muted small">
+        Crie uma conta editora compartilhada. Depois de criada, o GUIA da tela de login mostra as
+        credenciais para visitantes. Todos terão acesso aos mesmos dados deste workspace.
+      </p>
+      <p v-if="!demoAccount.enabled" class="muted">
+        A criação está desabilitada. Configure <code>DEMO_MODE=true</code> no backend para liberar
+        esta opção.
+      </p>
+      <template v-else-if="demoAccount.created">
+        <p>
+          <span class="badge">{{
+            demoAccount.available ? 'Disponível no GUIA' : 'Indisponível'
+          }}</span>
+          <span v-if="demoAccount.username"> · usuário {{ demoAccount.username }}</span>
+        </p>
+        <p class="muted small">
+          A restauração substitui somente os registros do dataset sintético “Vendas de
+          demonstração”. Dados e relatórios dos outros datasets permanecem intactos.
+        </p>
+        <button class="button secondary" :disabled="busy" @click="confirmDemoDataRestore">
+          Restaurar dados de demonstração
+        </button>
+        <p v-if="!demoAccount.active" class="muted small">
+          Reative o acesso desta conta na lista da equipe para voltar a exibi-la no GUIA.
+        </p>
+        <p v-else-if="!demoAccount.available" class="muted small">
+          As credenciais configuradas não correspondem à conta. Confira DEMO_USERNAME e
+          DEMO_PASSWORD no backend.
+        </p>
+      </template>
+      <template v-else>
+        <p v-if="demoAccount.username" class="small">
+          Usuário: <strong>{{ demoAccount.username }}</strong>
+        </p>
+        <button class="button" :disabled="busy" @click="createDemoAccount">
+          Criar conta pública
+        </button>
+      </template>
+    </div>
     <template v-if="section === 'settings'"
-      ><div class="panel">
+      ><div class="panel" data-tour="settings">
         <h2>Seu workspace</h2>
-        <p>{{ auth.user.name }} · {{ auth.user.email }}</p>
+        <p>
+          {{ auth.user.name }} · Usuário: {{ auth.user.username }}
+          <template v-if="auth.user.email"> · {{ auth.user.email }}</template>
+        </p>
         <p>
           Papel: <span class="badge">{{ auth.user.role }}</span>
         </p>
@@ -1047,7 +1160,35 @@ async function confirmAction() {
         </p>
         <a :href="docsUrl" target="_blank" rel="noopener">Documentacao da API (Swagger)</a>
       </div>
-      <div class="panel">
+      <div v-if="!auth.user.is_public_demo" class="panel">
+        <h2>Meu perfil</h2>
+        <p class="muted small">
+          Atualize seu nome de usuário e o email de contato opcional. O nome de usuário é usado no
+          login.
+        </p>
+        <form @submit.prevent="saveProfile">
+          <div class="form-grid">
+            <label
+              >Usuário<input
+                v-model="profileForm.username"
+                required
+                minlength="3"
+                maxlength="32"
+                pattern="[A-Za-z0-9._-]+"
+                autocomplete="username"
+            /></label>
+            <label
+              >Email de contato (opcional)<input
+                v-model="profileForm.email"
+                type="email"
+                maxlength="254"
+                autocomplete="email"
+            /></label>
+          </div>
+          <button class="button" :disabled="busy">Salvar perfil</button>
+        </form>
+      </div>
+      <div v-if="!auth.user.is_public_demo" class="panel">
         <h2>Alterar senha</h2>
         <p class="muted small">
           Use uma senha com pelo menos 10 caracteres. A alteracao encerra as outras sessoes da sua
@@ -1083,12 +1224,14 @@ async function confirmAction() {
           :rows="rows"
           :columns="[
             { key: 'name', label: 'Nome' },
-            { key: 'email', label: 'Email' },
+            { key: 'username', label: 'Usuário' },
+            { key: 'email', label: 'Email de contato' },
             { key: 'role', label: 'Papel' },
             { key: 'active', label: 'Ativo' },
           ]"
           ><template #role="{ row }"
-            ><select v-model="row.role" :aria-label="`Papel de ${row.name}`">
+            ><span v-if="row.is_public_demo" class="badge">Editor · conta pública</span>
+            <select v-else v-model="row.role" :aria-label="`Papel de ${row.name}`">
               <option value="viewer">Leitor</option>
               <option value="editor">Editor</option>
               <option value="admin">Administrador</option>
@@ -1099,8 +1242,14 @@ async function confirmAction() {
               type="checkbox"
               :aria-label="`Acesso ativo de ${row.name}`" /></template
           ><template #actions="{ row }"
-            ><button class="text-button" :disabled="busy" @click="saveUser(row)">
-              Salvar
+            ><button class="text-button" :disabled="busy" @click="saveUser(row)">Salvar</button>
+            <button
+              v-if="!row.is_public_demo && row.id !== auth.user.id"
+              class="text-button"
+              :disabled="busy"
+              @click="resetUserPassword(row)"
+            >
+              Redefinir senha
             </button></template
           ></DataTable
         >
@@ -1155,5 +1304,22 @@ async function confirmAction() {
         ><button class="button" @click="confirmAction">
           Confirmar alteração <ArrowUpRight :size="15" /></button></template
     ></AppDialog>
+    <AppDialog
+      :open="!!temporaryPassword"
+      title="Senha provisória — copie agora"
+      @close="temporaryPassword = null"
+    >
+      <p>
+        Usuário: <strong>{{ temporaryPassword?.username }}</strong>
+      </p>
+      <p class="temporary-password">{{ temporaryPassword?.password }}</p>
+      <p class="muted small">
+        Esta senha não será exibida novamente. Compartilhe-a por um canal seguro e peça ao membro
+        para alterá-la após entrar.
+      </p>
+      <template #footer>
+        <button class="button" @click="temporaryPassword = null">Entendi e ocultar</button>
+      </template>
+    </AppDialog>
   </section>
 </template>

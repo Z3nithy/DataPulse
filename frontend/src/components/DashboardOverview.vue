@@ -200,7 +200,7 @@ const progress = (kpi) =>
     <p class="scope-note" data-reveal>
       Indicadores históricos do workspace · o período selecionado filtra os gráficos abaixo.
     </p>
-    <div class="metrics dashboard-metrics">
+    <div class="metrics dashboard-metrics" data-tour="dashboard">
       <MetricCard
         label="Registros processados"
         :value="summary.records"

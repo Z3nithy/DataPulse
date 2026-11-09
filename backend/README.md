@@ -1,34 +1,37 @@
-# Backend — DataPulse API
+# Backend — API e operações
 
-Este diretorio contem a API REST, o banco SQLite, as migrations Alembic e o
-worker que executa tarefas demoradas. A API e o frontend rodam como processos
-separados e conversam por HTTP.
+Este diretório contém a API FastAPI, o banco SQLite, as migrations Alembic e o
+worker que processa importações e agendamentos em segundo plano. A interface web
+fica em [`../frontend`](../frontend/README.md).
 
-- [Voltar a visao geral e inicio rapido](../README.md)
-- [Documentacao da interface](../frontend/README.md)
+- [Voltar ao início rápido do projeto](../README.md)
+- [Documentação da interface](../frontend/README.md)
 
-## Como o backend funciona
+## Como as peças trabalham juntas
 
-1. O FastAPI recebe e valida requisicoes.
-2. Os schemas Pydantic validam os dados de entrada.
-3. Rotas aplicam autenticacao/permissoes e chamam os servicos de dominio.
-4. SQLAlchemy persiste dados em SQLite; Alembic controla as alteracoes do esquema.
-5. O processo `worker` consulta tarefas pendentes e executa importacoes e
-   agendamentos sem bloquear a API.
+1. A API recebe as chamadas HTTP da interface e valida os dados com Pydantic.
+2. As rotas verificam a sessão e as permissões do usuário.
+3. Os serviços executam importações, consultas e operações de domínio.
+4. SQLAlchemy acessa o banco SQLite; Alembic mantém o esquema atualizado.
+5. O processo worker busca tarefas pendentes e as executa fora da API.
 
-Nao sao criadas tabelas automaticamente no startup. Se o banco nao estiver na
-ultima migration, API e worker falham explicitamente para evitar operar com um
-esquema incompatível.
+A API, o worker e a interface são processos separados. Use o mesmo arquivo
+`.env` e o mesmo banco SQLite na API e no worker. O worker não inicia
+automaticamente junto com a API.
+
+> O aplicativo não cria nem atualiza tabelas automaticamente ao iniciar. Se o
+> banco não estiver na migration mais recente, a API e o worker interrompem a
+> inicialização para evitar operar com um esquema incompatível.
 
 ## Requisitos
 
 - Python 3.14.
 - PowerShell no Windows (os comandos podem ser adaptados para macOS/Linux).
-- As dependencias de `requirements.txt`.
+- Dependências listadas em [`requirements.txt`](requirements.txt).
 
-## Instalar e iniciar localmente
+## Instalar e iniciar
 
-Execute os comandos abaixo no PowerShell a partir da raiz do repositorio:
+Abra um PowerShell na raiz do repositório e crie o ambiente:
 
 ```powershell
 cd backend
@@ -38,126 +41,184 @@ python -m pip install -r requirements.txt
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 ```
 
-Edite `.env` e preencha `SECRET_KEY`. Gere um valor localmente:
+Edite `backend/.env` e defina `SECRET_KEY`. Gere uma chave localmente:
 
 ```powershell
 python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
-Copie a saida para `SECRET_KEY` no `.env`. Nao a publique, nao a envie para o
-frontend e nao a reutilize em outros projetos. O `.env` e ignorado pelo Git e
-excluido do contexto Docker; `.env.example` contem apenas valores de exemplo.
+Copie o valor para `SECRET_KEY`. A chave deve ter pelo menos 32 caracteres.
+Mantenha-a privada e não a reutilize em outros projetos. O arquivo `.env` é
+ignorado pelo Git; somente `.env.example`, sem segredos, deve ser versionado.
 
-Ainda na pasta `backend`, execute:
+Ainda na pasta `backend`, aplique as migrations e inicie a API:
 
 ```powershell
 python -m alembic upgrade head
 python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-Em outro terminal, ative o mesmo ambiente virtual, entre em `backend` e inicie
-o worker:
+Abra **outra** janela do PowerShell, ative o mesmo ambiente virtual e inicie o
+worker:
 
 ```powershell
+cd backend
+.\.venv\Scripts\Activate.ps1
 python -m worker
 ```
 
-O worker e necessario para importacoes em segundo plano e agendamentos. Se ficar
-offline, a API continua ativa e as tarefas ficam aguardando na fila.
+Se o worker estiver offline, a API continua respondendo, mas importações
+assíncronas e agendamentos aguardam na fila. O painel **Automação e
+agendamentos** mostra o estado do worker, as tarefas recentes e os motivos
+registrados para falhas.
 
-### Endpoints uteis
+### Endpoints locais úteis
 
-| Endereco | Finalidade |
-|---|---|
-| <http://127.0.0.1:8000/docs> | Swagger interativo |
-| <http://127.0.0.1:8000/openapi.json> | Contrato OpenAPI |
-| <http://127.0.0.1:8000/health> | Verifica se o processo responde |
-| <http://127.0.0.1:8000/ready> | Verifica se o banco esta acessivel |
+| Endereço                             | O que verifica                   |
+| ------------------------------------ | -------------------------------- |
+| <http://127.0.0.1:8000/docs>         | Documentação interativa Swagger  |
+| <http://127.0.0.1:8000/openapi.json> | Contrato OpenAPI                 |
+| <http://127.0.0.1:8000/health>       | Se o processo da API responde    |
+| <http://127.0.0.1:8000/ready>        | Se a API e o banco estão prontos |
 
-O frontend usa o proxy do Vite para encaminhar `/api` e `/docs` para a API local.
+No desenvolvimento, o Vite encaminha `/api`, `/docs` e `/openapi.json` para a
+API local.
 
-## Configuracao
+## Configuração (`.env`)
 
-Copie `.env.example` para `.env`. As variaveis mais usadas:
+Copie `.env.example` para `.env` e altere apenas o que for necessário.
+`DATABASE_URL` e `SECRET_KEY` são obrigatórias. Em desenvolvimento local, SMTP
+e integrações externas podem ficar desabilitados.
 
-| Variavel | Obrigatoria | Descricao |
-|---|---:|---|
-| `DATABASE_URL` | Sim | URL SQLAlchemy. O exemplo usa `sqlite:///./database.db`; caminhos relativos sao resolvidos a partir de `backend`. |
-| `SECRET_KEY` | Sim | Chave privada para assinar JWTs; minimo de 32 caracteres. |
-| `ALGORITHM` | Nao | Somente `HS256` e aceito. |
-| `CORS_ORIGINS` | Nao | Lista separada por virgulas das origens autorizadas. |
-| `API_ALLOWED_HOSTS` | Nao | Hosts HTTPS publicos permitidos para importacao de API; vazio desabilita essa integracao. |
-| `WORKER_LOCK_PATH` | Nao | Arquivo usado para impedir workers concorrentes no mesmo banco/volume. |
-| `SMTP_ENABLED` | Nao | `false` por padrao; habilite somente quando SMTP estiver configurado. |
-| `SMTP_HOST`, `SMTP_PORT` | Quando SMTP e habilitado | Servidor e porta do provedor de email. |
-| `SMTP_SECURITY` | Quando SMTP e habilitado | `starttls` ou `ssl`; a verificacao TLS permanece ativa. |
-| `SMTP_USERNAME`, `SMTP_PASSWORD` | Nao | Credenciais do provedor; configure apenas no ambiente local/servidor. |
-| `SMTP_FROM` | Quando SMTP e habilitado | Endereco remetente autorizado pelo provedor. |
-| `DATAPULSE_API_*` | Nao | Segredos de fontes externas HTTPS; configure no backend, nunca no Vue. |
+| Variável                         | Obrigatória      | Descrição                                                                                                      |
+| -------------------------------- | ---------------- | -------------------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`                   | Sim              | URL SQLAlchemy. O exemplo usa `sqlite:///./pulse.db`; caminhos relativos são resolvidos a partir de `backend`. |
+| `SECRET_KEY`                     | Sim              | Chave privada para assinar JWTs; mínimo de 32 caracteres.                                                      |
+| `ALGORITHM`                      | Não              | Algoritmo JWT; o projeto exige `HS256`.                                                                        |
+| `CORS_ORIGINS`                   | Não              | Origens autorizadas separadas por vírgula.                                                                     |
+| `API_ALLOWED_HOSTS`              | Não              | Hosts HTTPS autorizados para importação de API. Vazio desabilita essa integração.                              |
+| `DEMO_MODE`                      | Não              | `false` por padrão. Defina `true` para permitir que um administrador crie a conta pública de demonstração.     |
+| `DEMO_USERNAME`                  | Ao ativar a demo | Usuário configurado para a conta pública; 3 a 32 caracteres entre letras, números, ponto, hífen e sublinhado.  |
+| `DEMO_PASSWORD`                  | Ao ativar a demo | Senha privada da conta pública, com 10 a 128 caracteres. Não use uma senha real ou reutilizada.                |
+| `DEMO_EMAIL`                     | Não              | Email de contato opcional da conta pública; usado para notificações por email, não para login.                 |
+| `WORKER_LOCK_PATH`               | Não              | Arquivo de trava que impede workers concorrentes usando o mesmo banco.                                         |
+| `SMTP_ENABLED`                   | Não              | `false` por padrão; habilite somente após configurar SMTP.                                                     |
+| `SMTP_HOST`, `SMTP_PORT`         | Com SMTP         | Servidor e porta do provedor.                                                                                  |
+| `SMTP_SECURITY`                  | Com SMTP         | `starttls` ou `ssl`; a verificação TLS permanece ativa.                                                        |
+| `SMTP_USERNAME`, `SMTP_PASSWORD` | Com SMTP         | Credenciais do provedor; configure somente em ambiente privado.                                                |
+| `SMTP_FROM`                      | Com SMTP         | Endereço remetente autorizado pelo provedor.                                                                   |
+| `DATAPULSE_API_*`                | Não              | Credenciais de fontes externas HTTPS; configure no backend, nunca no Vue.                                      |
 
-Variaveis nao definidas no `.env` podem usar os valores padrao descritos em
-`.env.example`. `DATABASE_URL` e obrigatoria e `SECRET_KEY` nao pode ficar vazia.
-Nao use o mesmo segredo entre desenvolvimento e producao.
+O arquivo `.env.example` deixa a conta demo desativada e a senha vazia para não
+publicar credenciais. Para ativar uma demonstração local:
 
-## Autenticacao e permissoes
+1. Gere uma senha aleatória. Por exemplo:
 
-- O primeiro usuario cadastrado e administrador. O cadastro inicial fecha depois.
-- Administradores criam novos membros; eles comecam como leitores.
-- Leitores consultam; editores tambem criam e processam dados; administradores
-  gerenciam papeis e auditoria.
-- As permissoes sao verificadas na API, nao apenas na interface.
-- JWTs expiram em 60 minutos. Alterar senha, alterar permissoes ou encerrar sessoes
-  revoga os tokens existentes; a senha e armazenada usando Argon2.
-- Login e cadastro inicial tem limite local de tentativas por IP.
+   ```powershell
+   python -c "import secrets; print(secrets.token_urlsafe(18))"
+   ```
 
-O endpoint `POST /api/v1/auth/password` exige a senha atual e devolve um token
-novo para a sessao atual. `POST /api/v1/auth/logout` encerra todas as sessoes da
-conta. Nao ha recuperacao automatizada de senha, refresh token ou MFA.
+2. Defina `DEMO_MODE=true` e coloque a senha gerada em `DEMO_PASSWORD` no
+   arquivo local `backend/.env`.
+3. Reinicie a API e entre com a conta de administrador.
+4. Abra **Configurações** e selecione **Criar conta pública**.
+5. Depois da criação, o botão **GUIA** na tela de login mostra as credenciais
+   configuradas.
 
-Todos os usuarios no mesmo banco compartilham um unico workspace. O projeto nao
-implementa isolamento multiempresa e nao deve receber dados confidenciais sem
-avaliacao e controles adicionais.
+Não publique o arquivo `.env` nem copie sua senha para capturas de tela,
+documentação pública ou código-fonte.
 
-## Endpoints da API
+## Contas, permissões e demonstração
 
-Todos os endpoints de negocio tem o prefixo `/api/v1`. Para modelos, tipos e
-respostas completos, consulte o Swagger em `/docs`.
+- O primeiro usuário cadastrado torna-se administrador e fecha o cadastro inicial.
+- O login usa nome de usuário; o email de contato é opcional.
+- Administradores criam membros, que começam como leitores, e definem seus papéis.
+- Leitores consultam dados; editores também criam e processam dados; administradores
+  gerenciam a equipe e as operações.
+- As permissões são verificadas na API, não apenas na interface.
+- O GUIA da tela de login só disponibiliza a conta demo depois de sua criação
+  explícita por um administrador.
 
-| Area | Rotas principais |
-|---|---|
-| Sessao | `/auth/setup`, `/auth/register`, `/auth/login`, `/auth/me`, `/auth/password`, `/auth/logout` |
-| Equipe | `/users`, `/audit` |
-| Fontes e dados | `/sources`, `/datasets`, `/datasets/{id}/records` |
-| Importacoes | `/ingestion/import`, `/ingestion/jobs` |
-| Analytics | `/analytics/query`, `/analytics/summary`, `/analytics/trends` |
-| Indicadores | `/kpis`, `/insights`, `/alerts` |
-| Relatorios | `/reports`, `/reports/{id}/export` |
-| Operacoes pessoais | `/notifications`, `/favorites` |
-| Agendamentos/worker | `/schedules`, `/operations/status`, `/operations/metrics` |
+### Restaurar dados sintéticos da conta demo
 
-Sucesso segue o formato `{"data": ..., "meta": ...}`. Erros incluem codigo,
-mensagem, detalhes de validacao e identificador de requisicao. Colecoes usam
-paginacao; o tamanho maximo de pagina e 100.
+Em **Configurações**, um administrador pode restaurar os dados de demonstração.
+A confirmação informa que serão substituídos apenas os registros do dataset
+sintético `Vendas de demonstração`. Fontes, datasets, relatórios e registros de
+outros datasets permanecem intactos. Se houver uma importação em andamento
+nesse dataset, a operação é bloqueada até ela terminar.
 
-### Importacao e processamento
+A mesma operação está disponível em `POST /api/v1/users/demo/restore-data` e
+retorna o número de registros recriados.
 
-- Formatos: CSV, JSON, XLSX e XLS.
-- Limites: 5 MB por arquivo/resposta, ate 100 colunas e 10.000 linhas por
-  importacao.
-- Dados sao normalizados e validados conforme o esquema; duplicados sao ignorados.
-- Importacao em segundo plano retorna `202 Accepted`: isso confirma que entrou na
-  fila, nao que a importacao terminou. Consulte o job pelo endpoint de historico.
-- Integracoes externas usam HTTPS e exigem host autorizado em `API_ALLOWED_HOSTS`.
+### Perfil e senhas
 
-### Analytics
+- `PATCH /api/v1/auth/profile`: cada usuário atualiza o próprio nome de usuário
+  e email opcional.
+- `POST /api/v1/auth/password`: troca de senha exige a senha atual e devolve um
+  novo token para a sessão atual.
+- `POST /api/v1/users/{id}/password-reset`: administrador gera uma senha
+  provisória para outro membro. A senha aparece uma única vez na interface;
+  sessões antigas são revogadas. Compartilhe a senha por um canal seguro e
+  oriente o membro a alterá-la ao entrar.
+- `POST /api/v1/auth/logout`: encerra todas as sessões da conta.
 
-Consultas estruturadas oferecem `count`, `sum`, `avg`, `min` e `max`, filtros
-tipados, agrupamentos e tendencias. Consultas SQL livres nao sao aceitas.
-Insights usam uma regra estatistica de anomalia; nao sao previsoes nem IA.
+JWTs expiram em 60 minutos e as senhas são armazenadas com Argon2. O limite de
+tentativas de login é local ao processo. Não há recuperação por email, refresh
+token ou MFA.
+
+## API
+
+Todos os endpoints de negócio usam o prefixo `/api/v1`. O Swagger em
+`/docs` mostra os modelos, parâmetros e exemplos completos.
+
+| Área           | Rotas principais                                                                                                            |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Sessão         | `/auth/setup`, `/auth/demo`, `/auth/register`, `/auth/login`, `/auth/me`, `/auth/profile`, `/auth/password`, `/auth/logout` |
+| Equipe         | `/users`, `/users/{id}/password-reset`, `/users/demo/restore-data`, `/audit`                                                |
+| Fontes e dados | `/sources`, `/datasets`, `/datasets/{id}/records`                                                                           |
+| Importações    | `/ingestion/import`, `/ingestion/jobs`                                                                                      |
+| Análises       | `/analytics/query`, `/analytics/summary`, `/analytics/trends`                                                               |
+| Indicadores    | `/kpis`, `/insights`, `/alerts`                                                                                             |
+| Relatórios     | `/reports`, `/reports/{id}/export`                                                                                          |
+| Operações      | `/notifications`, `/favorites`, `/schedules`, `/operations/status`, `/operations/metrics`                                   |
+
+Respostas bem-sucedidas usam o formato `{"data": ..., "meta": ...}`. Erros
+incluem mensagem e detalhes de validação. Coleções são paginadas; o tamanho
+máximo de página é 100.
+
+### Importações e análises
+
+- Formatos aceitos: CSV, JSON, XLSX e XLS.
+- Limites: 5 MB por arquivo/resposta, até 100 colunas e 10.000 linhas por
+  importação.
+- Dados são validados e normalizados conforme o esquema do dataset. Duplicados
+  são ignorados.
+- Importações em segundo plano retornam `202 Accepted`: isso significa que a
+  tarefa entrou na fila, não que terminou. Consulte o histórico de importações.
+- Importações de API usam HTTPS e só aceitam hosts autorizados por
+  `API_ALLOWED_HOSTS`.
+- Consultas oferecem `count`, `sum`, `avg`, `min` e `max`, filtros tipados,
+  agrupamentos e tendências. SQL livre não é aceito.
+- Insights usam uma regra estatística para identificar anomalias; não são
+  previsões nem resultados de IA.
+
+## Diagnóstico do worker e da fila
+
+1. Abra **Configurações** como administrador e atualize o painel de operações.
+2. Se o worker estiver offline, confirme que a janela do worker está aberta,
+   que usa o mesmo ambiente virtual e que aponta para o mesmo banco da API.
+3. Se houver tarefas na fila, aguarde o worker processá-las. Uma fila parada
+   pode indicar um erro no processo; consulte o terminal do worker.
+4. Abra **Últimas tarefas em segundo plano** para ver status e mensagem de erro.
+   Tarefas com falha não são reenviadas automaticamente; corrija a causa e crie
+   uma nova execução.
+5. Se o email falhar, abra **Últimas entregas de email** e verifique SMTP,
+   conectividade, TLS, credenciais e logs do servidor.
 
 ## Migrations
 
-Depois de atualizar o codigo, crie backup do banco e aplique migrations:
+Depois de atualizar o código, faça backup do banco e aplique as migrations na
+pasta `backend`:
 
 ```powershell
 python -m alembic upgrade head
@@ -166,11 +227,11 @@ python -m alembic upgrade head
 Para criar uma migration durante o desenvolvimento:
 
 ```powershell
-python -m alembic revision --autogenerate -m "descricao da alteracao"
+python -m alembic revision --autogenerate -m "descricao-da-alteracao"
 ```
 
-Revise o arquivo gerado antes de usa-lo. Para verificar se os modelos e migrations
-estao sincronizados:
+Revise o arquivo gerado antes de usá-lo. Verifique se os modelos e migrations
+estão sincronizados:
 
 ```powershell
 python -m alembic check
@@ -178,38 +239,38 @@ python -m alembic check
 
 Evite `downgrade base`: ele remove as tabelas do DataPulse e seus dados.
 
-## Backups e restauracao SQLite
+## Backups e restauração do SQLite
 
-O modulo `backup.py` cria backups online do SQLite e verifica integridade e
-chaves estrangeiras. Guarde backups fora da pasta servida pela aplicacao e nao
-os publique no repositorio.
+O módulo `backup.py` cria backups online do SQLite e verifica a integridade e
+as chaves estrangeiras. Guarde os backups fora da pasta do projeto e nunca os
+publique no repositório.
 
 ```powershell
-python -m backup backup C:\backups\datapulse-2026-11-05.backup
-python -m backup verify C:\backups\datapulse-2026-11-05.backup
-python -m backup restore C:\backups\datapulse-2026-11-05.backup --target C:\dados\restaurado.db
+python -m backup backup C:\backups\datapulse.backup
+python -m backup verify C:\backups\datapulse.backup
+python -m backup restore C:\backups\datapulse.backup --target C:\dados\restaurado.db
 ```
 
-Restore exige um destino novo e nunca sobrescreve o arquivo existente. Para
-simular a retencao dos sete backups validos mais recentes:
+A restauração exige um arquivo de destino novo e não sobrescreve um arquivo
+existente. Para simular a retenção dos sete backups válidos mais recentes:
 
 ```powershell
 python -m backup retain C:\backups --keep 7
 ```
 
-So remove arquivos excedentes quando solicitado explicitamente:
+Arquivos excedentes só são removidos com `--apply`:
 
 ```powershell
 python -m backup retain C:\backups --keep 7 --apply
 ```
 
-Agendar backups e responsabilidade do ambiente de execucao. No Windows, use o
-Agendador de Tarefas; revise uma simulacao de retencao antes de habilitar a
-remocao automatica e mantenha uma copia externa.
+Agendar backups é responsabilidade do ambiente de execução. No Windows, use o
+Agendador de Tarefas. Revise uma simulação de retenção antes de habilitar a
+remoção automática e mantenha uma cópia externa.
 
 ## Testes
 
-Execute em `backend`:
+Execute na pasta `backend`:
 
 ```powershell
 python -m unittest discover -s tests -v
@@ -217,48 +278,33 @@ python -m alembic upgrade head
 python -m alembic check
 ```
 
-Os testes usam um banco SQLite temporario e uma chave de teste; nao reutilizam
-o banco local do projeto nem fazem chamadas a APIs privadas. A suite cobre
-autenticacao, permissoes, migrations, importacoes, analytics, operacoes e
-backups.
+Os testes usam um banco SQLite temporário e uma chave exclusiva de teste; não
+reutilizam o banco local nem fazem chamadas a APIs privadas. A suíte cobre
+autenticação, permissões, migrations, importações, análises, operações e backups.
 
-## Docker Compose
-
-O arquivo raiz `compose.yaml` cria os servicos `migrate`, `api`, `worker` e `web`.
-Antes de subir os containers, crie `backend/.env`, defina `SECRET_KEY` e, na raiz:
-
-```powershell
-$env:APP_ADDRESS = "localhost"
-docker compose config --quiet
-docker compose up --build
-```
-
-Compose usa um volume persistente para SQLite e migrations sao executadas antes
-da API. O `backend/.dockerignore` impede que `.env`, bancos locais e backups sejam
-copiados para a imagem. Em um dominio publico, configure DNS, CORS e HTTPS antes
-de expor a aplicacao.
-
-## Estrutura do codigo
+## Estrutura do código
 
 ```text
-main.py                    cria a aplicacao FastAPI e middleware
-routes/api.py              autenticacao, equipe e funcionalidades de dados
-routes/operations.py       notificacoes, favoritos e agendamentos
-schemas/datapulse.py       validacao dos contratos HTTP
-models/entities.py         tabelas e relacoes SQLAlchemy
-services/                  ingestao, analytics, eventos, relatorios e fila
-database/                  engine e sessoes SQLAlchemy
-migrations/                historico versionado do esquema
+main.py                    cria a aplicação FastAPI e middleware
+routes/api.py              autenticação, equipe e funcionalidades de dados
+routes/operations.py       notificações, favoritos e agendamentos
+schemas/datapulse.py       validação dos contratos HTTP
+models/entities.py         tabelas e relações SQLAlchemy
+services/                  ingestão, análise, eventos, relatórios e fila
+database/                  engine e sessões SQLAlchemy
+migrations/                histórico versionado do esquema
 worker.py                  processamento de tarefas fora da API
-backup.py                  backup, verificacao, restore e retencao
-tests/                     testes de API, dominio e persistencia
+backup.py                  backup, verificação, restauração e retenção
+tests/                     testes de API, domínio e persistência
 ```
 
-## Limites e operacao
+## Limites de operação
 
-SQLite e o banco intencional para este portfolio. O worker e protegido por trava
-de filesystem e a arquitetura e para uma maquina/volume compartilhado; nao
-execute multiplas replicas em hosts diferentes. Rate limiting e local, nao
-distribuido. Para uma aplicacao real com dados sensiveis, avalie seguranca,
-privacidade, backup, recuperacao de conta e requisitos de disponibilidade antes
-da publicacao.
+SQLite e a trava local do worker são adequados para este portfólio em uma única
+máquina/volume. Não execute várias réplicas em hosts diferentes. O limite de
+tentativas de login também é local, não distribuído.
+
+Todas as contas no mesmo banco compartilham um único workspace. Para uso
+empresarial, público ou com dados sensíveis, faça uma avaliação de segurança,
+privacidade, backup, recuperação de conta e disponibilidade antes de hospedar o
+sistema.

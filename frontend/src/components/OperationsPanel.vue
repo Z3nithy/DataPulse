@@ -35,6 +35,43 @@ const metrics = ref(null)
 const schedules = ref([])
 const tasks = ref([])
 const emails = ref([])
+const operationalGuidance = computed(() => {
+  const messages = []
+  const queued = metrics.value?.tasks.queued || 0
+  const failed = metrics.value?.tasks.failed || 0
+  const failedEmails = metrics.value?.emails.failed || 0
+  if (status.value && !status.value.worker_online) {
+    messages.push({
+      kind: 'warning',
+      text: queued
+        ? `Worker offline; ${queued} tarefa(s) aguardam na fila. Inicie python -m worker no servidor para processá-las.`
+        : 'Worker offline. Importações em segundo plano e agendamentos só serão executados quando python -m worker estiver ativo no servidor.',
+    })
+  } else if (queued) {
+    messages.push({
+      kind: 'info',
+      text: `${queued} tarefa(s) aguardam processamento. Se a fila não diminuir, confira o processo do worker e os logs do servidor.`,
+    })
+  }
+  if (failed) {
+    messages.push({
+      kind: 'warning',
+      text: `${failed} tarefa(s) falharam. Abra “Últimas tarefas” para consultar o erro; corrija a causa indicada antes de enviar novamente. Falhas não são reenviadas automaticamente.`,
+    })
+  }
+  if (status.value && !status.value.smtp_enabled) {
+    messages.push({
+      kind: 'info',
+      text: 'SMTP desabilitado: relatórios e notificações por email não serão entregues até configurar o serviço.',
+    })
+  } else if (failedEmails) {
+    messages.push({
+      kind: 'warning',
+      text: `${failedEmails} email(s) falharam. Consulte “Últimas entregas de email” e confira a configuração e os logs do SMTP.`,
+    })
+  }
+  return messages
+})
 const busy = ref(false)
 const error = ref('')
 const notice = ref('')
@@ -130,9 +167,13 @@ const date = (value) => (value ? new Date(value).toLocaleString('pt-BR') : 'Aind
       {{ metrics.emails.queued || 0 }} emails pendentes · {{ metrics.emails.failed || 0 }} emails
       com falha.
     </p>
-    <p v-if="status && !status.worker_online" class="message warning">
-      O worker não está respondendo. As tarefas ficam na fila até executar
-      <code>python -m worker</code> no servidor.
+    <p
+      v-for="(message, index) in operationalGuidance"
+      :key="index"
+      class="message"
+      :class="message.kind"
+    >
+      {{ message.text }}
     </p>
     <Notification v-if="error" :message="error" kind="error" @dismiss="error = ''" />
     <Notification v-if="notice" :message="notice" kind="success" @dismiss="notice = ''" />
@@ -198,6 +239,10 @@ const date = (value) => (value ? new Date(value).toLocaleString('pt-BR') : 'Aind
     </DataTable>
     <details>
       <summary>Últimas 10 tarefas em segundo plano</summary>
+      <p class="muted small">
+        O campo Erro mostra o motivo registrado pelo servidor. Corrija a causa e crie uma nova
+        execução; tarefas com falha não são repetidas automaticamente.
+      </p>
       <DataTable
         :rows="tasks"
         :columns="[
@@ -210,6 +255,9 @@ const date = (value) => (value ? new Date(value).toLocaleString('pt-BR') : 'Aind
     </details>
     <details>
       <summary>Últimas 10 entregas de email</summary>
+      <p class="muted small">
+        Se o envio falhar, verifique o erro abaixo, as credenciais e os logs do servidor SMTP.
+      </p>
       <DataTable
         :rows="emails"
         :columns="[

@@ -16,6 +16,7 @@ TEST_DIRECTORY = tempfile.TemporaryDirectory(prefix="datapulse-tests-")
 os.environ["DATABASE_URL"] = "sqlite:///" + str(Path(TEST_DIRECTORY.name) / "tests.db")
 os.environ["SECRET_KEY"] = "datapulse-test-only-key-with-at-least-32-characters"
 os.environ["SMTP_ENABLED"] = "false"
+os.environ["DEMO_MODE"] = "false"
 
 from alembic import command
 from alembic.config import Config
@@ -26,8 +27,9 @@ from sqlalchemy import delete, func, inspect, select
 from database import Base, engine
 from database.db import SessionLocal
 from main import app
+from core.senha_hash import criar_hash_senha
 from models import (
-    AnalyticsResult, AuditLog, BackgroundTask, DataRecord, Dataset, EmailDelivery,
+    AnalyticsResult, AuditLog, BackgroundTask, DataRecord, Dataset, EmailDelivery, KPI,
     Favorite, IngestionJob, Notification, Report, Schedule, User,
 )
 from routes.api import login_attempts
@@ -60,7 +62,8 @@ class DataPulseTests(unittest.TestCase):
         self.client_context = TestClient(app)
         self.client = self.client_context.__enter__()
         response = self.client.post(PREFIX + "/auth/register", json={
-            "name": "Test Admin", "email": "admin@example.test", "password": "Test-only-password-123",
+            "name": "Test Admin", "username": "admin", "email": "admin@example.test",
+            "password": "Test-only-password-123",
         })
         self.assertEqual(response.status_code, 201, response.text)
         self.admin = response.json()["data"]
@@ -100,7 +103,10 @@ class DataPulseTests(unittest.TestCase):
     def test_notification_history_read_state_is_personal_and_persistent(self):
         dataset_id = self.seed_sales()
         kpi = self.post("/kpis", {"name": "Limit KPI", "query": {"dataset_id": dataset_id, "aggregation": "sum", "field": "amount"}})
-        member = self.post("/users", {"name": "Viewer", "email": "reader@example.test", "password": "Test-only-password-123"})
+        member = self.post("/users", {
+            "name": "Viewer", "username": "reader", "email": "reader@example.test",
+            "password": "Test-only-password-123",
+        })
         self.post("/alerts", {"name": "Limit", "kpi_id": kpi["id"], "operator": "gt", "threshold": 50})
         events = self.client.get(PREFIX + "/notifications").json()
         self.assertEqual(events["meta"]["unread"], 2)  # import and alert
@@ -108,7 +114,9 @@ class DataPulseTests(unittest.TestCase):
         self.assertEqual(alert["kind"], "alert")
         self.assertEqual(self.client.patch(PREFIX + f"/notifications/{alert['id']}/read").status_code, 200)
         self.assertEqual(self.client.get(PREFIX + "/notifications").json()["meta"]["unread"], 1)
-        token = self.post("/auth/login", {"email": member["email"], "password": "Test-only-password-123"}, 200)["access_token"]
+        token = self.post("/auth/login", {
+            "username": member["username"], "password": "Test-only-password-123",
+        }, 200)["access_token"]
         headers = {"Authorization": "Bearer " + token}
         self.assertEqual(self.client.get(PREFIX + "/notifications", headers=headers).json()["meta"]["unread"], 1)
         self.assertEqual(self.client.patch(PREFIX + f"/notifications/{alert['id']}/read", headers=headers).status_code, 404)
@@ -138,8 +146,13 @@ class DataPulseTests(unittest.TestCase):
         favorite = self.post("/favorites", {"name": "Saved filter", "query": query})
         self.assertEqual(self.client.get(PREFIX + "/favorites").json()["data"][0]["query"]["filters"], query["filters"])
         self.assertEqual(self.client.post(PREFIX + "/favorites", json={"name": "Saved filter", "query": query}).status_code, 409)
-        self.post("/users", {"name": "Reader", "email": "reader@example.test", "password": "Test-only-password-123"})
-        token = self.post("/auth/login", {"email": "reader@example.test", "password": "Test-only-password-123"}, 200)["access_token"]
+        self.post("/users", {
+            "name": "Reader", "username": "reader", "email": "reader@example.test",
+            "password": "Test-only-password-123",
+        })
+        token = self.post("/auth/login", {
+            "username": "reader", "password": "Test-only-password-123",
+        }, 200)["access_token"]
         headers = {"Authorization": "Bearer " + token}
         self.assertEqual(self.client.get(PREFIX + "/favorites", headers=headers).json()["data"], [])
         self.assertEqual(self.client.delete(PREFIX + f"/favorites/{favorite['id']}", headers=headers).status_code, 404)
@@ -187,6 +200,29 @@ class DataPulseTests(unittest.TestCase):
             self.assertIsNone(db.get(BackgroundTask, task.id).file_content)
             self.assertEqual(db.scalar(select(func.count()).select_from(DataRecord)), 0)
 
+    def test_background_task_failure_gives_safe_actionable_diagnostic(self):
+        dataset = self.dataset()
+        with SessionLocal() as db:
+            task = BackgroundTask(
+               kind="report",
+               dataset_id=dataset["id"],
+               payload={"name": "Broken report", "query": {"dataset_id": dataset["id"]}},
+               created_by=self.admin["user"]["id"],
+            )
+            db.add(task)
+            db.commit()
+            task_id = task.id
+            with patch("services.operations.execute_query", side_effect=RuntimeError("private detail")):
+               self.assertTrue(process_task(db))
+            db.expire_all()
+            failed_task = db.get(BackgroundTask, task_id)
+            self.assertEqual(failed_task.status, "failed")
+            self.assertEqual(
+               failed_task.error,
+               "Falha interna (RuntimeError). Consulte os logs do worker.",
+            )
+            self.assertNotIn("private detail", failed_task.error)
+
     def test_schedules_generate_real_snapshots_without_duplicate_dispatch(self):
         dataset_id = self.seed_sales()
         schedule = self.post("/schedules", {"name": "Weekly report", "kind": "report", "dataset_id": dataset_id,
@@ -209,8 +245,13 @@ class DataPulseTests(unittest.TestCase):
         self.assertEqual(self.client.post(PREFIX + "/schedules", json=common).status_code, 422)
         self.assertEqual(self.client.post(PREFIX + "/schedules", json={**common, "interval_minutes": 1}).status_code, 422)
         self.assertEqual(self.client.post(PREFIX + "/schedules", json={**common, "kind": "report"}).status_code, 422)
-        self.post("/users", {"name": "Reader", "email": "reader@example.test", "password": "Test-only-password-123"})
-        token = self.post("/auth/login", {"email": "reader@example.test", "password": "Test-only-password-123"}, 200)["access_token"]
+        self.post("/users", {
+            "name": "Reader", "username": "reader", "email": "reader@example.test",
+            "password": "Test-only-password-123",
+        })
+        token = self.post("/auth/login", {
+            "username": "reader", "password": "Test-only-password-123",
+        }, 200)["access_token"]
         headers = {"Authorization": "Bearer " + token}
         for path in ("/schedules", "/operations/tasks", "/operations/emails"):
             self.assertEqual(self.client.get(PREFIX + path, headers=headers).status_code, 403)
@@ -275,9 +316,9 @@ class DataPulseTests(unittest.TestCase):
         dated_backups = [directory / f"datapulse-test-{index}.backup" for index in range(3)]
         try:
             copy_database(Path(TEST_DIRECTORY.name) / "tests.db", backup)
-            self.assertEqual(verify(backup), "0003")
+            self.assertEqual(verify(backup), "0004")
             copy_database(backup, restored)
-            self.assertEqual(verify(restored), "0003")
+            self.assertEqual(verify(restored), "0004")
             for index, path in enumerate(dated_backups):
                 copy_database(backup, path)
                 os.utime(path, (index, index))
@@ -346,8 +387,13 @@ class DataPulseTests(unittest.TestCase):
         self.assertEqual(metrics["tasks"]["queued"], 100)
         with SessionLocal() as db:
             self.assertEqual(db.scalar(select(func.count()).select_from(IngestionJob)), 0)
-        self.post("/users", {"name": "Viewer", "email": "viewer@example.test", "password": "Test-only-password-123"})
-        token = self.post("/auth/login", {"email": "viewer@example.test", "password": "Test-only-password-123"}, 200)["access_token"]
+        self.post("/users", {
+            "name": "Viewer", "username": "viewer", "email": "viewer@example.test",
+            "password": "Test-only-password-123",
+        })
+        token = self.post("/auth/login", {
+            "username": "viewer", "password": "Test-only-password-123",
+        }, 200)["access_token"]
         self.assertEqual(self.client.get(PREFIX + "/operations/metrics",
             headers={"Authorization": "Bearer " + token}).status_code, 403)
 
@@ -386,6 +432,19 @@ class DataPulseTests(unittest.TestCase):
         with engine.begin() as connection:
             connection.exec_driver_sql("CREATE TABLE unrelated_fixture (id INTEGER PRIMARY KEY)")
         try:
+            command.downgrade(self.migration_config, "0003")
+            with engine.begin() as connection:
+                connection.exec_driver_sql(
+                    "INSERT INTO users "
+                    "(id, created_at, name, email, password_hash, role, active, token_version, bootstrap_key) "
+                    "VALUES (100, CURRENT_TIMESTAMP, 'Migrated member', 'admin@other.example', "
+                    "'hash', 'viewer', 1, 0, NULL)"
+                )
+            command.upgrade(self.migration_config, "head")
+            with SessionLocal() as db:
+                migrated = db.get(User, 100)
+                self.assertEqual(migrated.username, "admin-2")
+
             command.downgrade(self.migration_config, "base")
             self.assertIn("unrelated_fixture", inspect(engine).get_table_names())
             command.upgrade(self.migration_config, "head")
@@ -396,10 +455,11 @@ class DataPulseTests(unittest.TestCase):
 
     def test_authentication_roles_and_revocation(self):
         member = self.post("/users", {
-            "name": "Viewer", "email": "viewer@example.test", "password": "Test-only-password-123",
+            "name": "Viewer", "username": "viewer", "email": "viewer@example.test",
+            "password": "Test-only-password-123",
         })
         viewer = self.post("/auth/login", {
-            "email": "viewer@example.test", "password": "Test-only-password-123",
+            "username": "viewer", "password": "Test-only-password-123",
         }, 200)
         self.assertEqual(member["role"], "viewer")
         self.assertEqual(viewer["user"]["role"], "viewer")
@@ -412,7 +472,7 @@ class DataPulseTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.client.get(PREFIX + "/sources", headers=headers).status_code, 401)
         viewer = self.post("/auth/login", {
-            "email": "viewer@example.test", "password": "Test-only-password-123",
+            "username": "viewer", "password": "Test-only-password-123",
         }, 200)
         headers = {"Authorization": "Bearer " + viewer["access_token"]}
         response = self.client.post(PREFIX + "/sources", json={"name": "Allowed", "kind": "csv"}, headers=headers)
@@ -426,8 +486,116 @@ class DataPulseTests(unittest.TestCase):
                                           json={"role": "viewer"}).status_code, 422)
         self.assertFalse(self.client.get(PREFIX + "/auth/setup").json()["data"]["registration_open"])
         self.assertEqual(self.client.post(PREFIX + "/auth/register", json={
-            "name": "Outsider", "email": "outsider@example.test", "password": "Test-only-password-123",
+            "name": "Outsider", "username": "outsider", "email": "outsider@example.test",
+            "password": "Test-only-password-123",
         }).status_code, 403)
+
+    def test_only_admin_can_create_public_demo_account_and_guide_exposes_credentials(self):
+        demo_email = "demo@example.test"
+        demo_password = "Public-demo-password-123"
+        with SessionLocal() as db:
+            db.add(User(
+                name="Legacy demo",
+                username="demo",
+                email=demo_email,
+                password_hash=criar_hash_senha(demo_password),
+                role="editor",
+                active=True,
+                bootstrap_key="demo",
+            ))
+            db.commit()
+
+        with (
+            patch("routes.api.DEMO_MODE", True),
+            patch("routes.api.DEMO_USERNAME", "demo"),
+            patch("routes.api.DEMO_EMAIL", demo_email),
+            patch("routes.api.DEMO_PASSWORD", demo_password),
+        ):
+            self.assertEqual(self.client.get(PREFIX + "/auth/demo").json()["data"], {
+                "available": False,
+            })
+            self.assertEqual(self.client.post(PREFIX + "/auth/login", json={
+                "username": "demo",
+                "password": demo_password,
+            }).status_code, 401)
+            status = self.client.get(PREFIX + "/users/demo")
+            self.assertEqual(status.status_code, 200)
+            self.assertEqual(status.json()["data"], {
+                "enabled": True,
+                "created": False,
+                "active": True,
+                "available": False,
+                "username": "demo",
+                "email": demo_email,
+            })
+            created = self.client.post(PREFIX + "/users/demo", json={})
+            self.assertEqual(created.status_code, 201, created.text)
+            self.assertEqual(created.json()["data"]["user"]["role"], "editor")
+            self.assertTrue(created.json()["data"]["sample_data_created"])
+            self.assertNotIn("password_hash", created.json()["data"]["user"])
+            self.assertTrue(created.json()["data"]["user"]["is_public_demo"])
+
+            guide = self.client.get(PREFIX + "/auth/demo")
+            self.assertEqual(guide.status_code, 200)
+            self.assertEqual(guide.json()["data"], {
+                "available": True,
+                "username": "demo",
+                "password": demo_password,
+                "role": "editor",
+            })
+            demo = self.post("/auth/login", {"username": "demo", "password": demo_password}, 200)
+            duplicate = self.client.post(PREFIX + "/users/demo", json={})
+            self.assertEqual(duplicate.status_code, 409)
+
+        self.assertEqual(demo["user"]["role"], "editor")
+        demo_headers = {"Authorization": "Bearer " + demo["access_token"]}
+        datasets = self.client.get(PREFIX + "/datasets", headers=demo_headers).json()["data"]
+        self.assertEqual(len(datasets), 1)
+        with SessionLocal() as db:
+            dataset = db.scalar(select(Dataset))
+            records = db.scalar(select(func.count(DataRecord.id)))
+            kpi = db.scalar(select(KPI))
+            self.assertEqual(records, 36)
+            self.assertEqual(kpi.name, "Receita total")
+            self.assertEqual(kpi.dataset_id, dataset.id)
+
+        self.assertEqual(self.client.post(
+            PREFIX + "/sources",
+            json={"name": "Minha fonte", "kind": "csv"},
+            headers=demo_headers,
+        ).status_code, 201)
+        self.assertEqual(self.client.get(PREFIX + "/users", headers=demo_headers).status_code, 403)
+        self.assertEqual(self.client.post(PREFIX + "/auth/password", json={
+            "current_password": demo_password,
+            "new_password": "Different-public-password-123",
+        }, headers=demo_headers).status_code, 403)
+        self.assertEqual(self.client.patch(
+            PREFIX + f"/users/{demo['user']['id']}",
+            json={"role": "admin", "active": True},
+        ).status_code, 422)
+
+        viewer = self.post("/users", {
+            "name": "Viewer",
+            "username": "viewer",
+            "email": "viewer@example.test",
+            "password": "Viewer-password-123",
+        })
+        viewer_login = self.post("/auth/login", {
+            "username": viewer["username"],
+            "password": "Viewer-password-123",
+        }, 200)
+        viewer_headers = {"Authorization": "Bearer " + viewer_login["access_token"]}
+        self.assertEqual(self.client.post(
+            PREFIX + "/users/demo", json={}, headers=viewer_headers,
+        ).status_code, 403)
+
+    def test_public_demo_account_creation_requires_demo_mode(self):
+        with patch("routes.api.DEMO_MODE", False):
+            response = self.client.post(PREFIX + "/users/demo", json={})
+            self.assertEqual(response.status_code, 409)
+            self.assertEqual(self.client.get(PREFIX + "/auth/demo").json()["data"], {
+                "available": False,
+            })
 
     def test_password_change_rotates_tokens_and_rejects_bad_current_password(self):
         token = self.admin["access_token"]
@@ -453,42 +621,188 @@ class DataPulseTests(unittest.TestCase):
             "Authorization": "Bearer " + new_token,
         }).status_code, 200)
         self.assertEqual(self.client.post(PREFIX + "/auth/login", json={
-            "email": "admin@example.test", "password": "Test-only-password-123",
+            "username": "admin", "password": "Test-only-password-123",
         }).status_code, 401)
         self.assertEqual(self.client.post(PREFIX + "/auth/login", json={
-            "email": "admin@example.test", "password": "Another-test-password-456",
+            "username": "admin", "password": "Another-test-password-456",
         }).status_code, 200)
         new_login = self.client.post(PREFIX + "/auth/login", json={
-            "email": "admin@example.test", "password": "Another-test-password-456",
+            "username": "admin", "password": "Another-test-password-456",
         }).json()["data"]
         session_headers = {"Authorization": "Bearer " + new_login["access_token"]}
         self.assertEqual(self.client.post(PREFIX + "/auth/logout", headers=session_headers).status_code, 200)
         self.assertEqual(self.client.get(PREFIX + "/auth/me", headers=session_headers).status_code, 401)
 
-    def test_login_and_input_validation(self):
-        self.post("/auth/login", {"email": "ADMIN@example.test", "password": "Test-only-password-123"}, 200)
+    def test_profile_update_normalizes_username_and_keeps_contact_email_optional(self):
+        response = self.client.patch(PREFIX + "/auth/profile", json={
+            "username": "New.Admin", "email": None,
+        })
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["data"]["username"], "new.admin")
+        self.assertIsNone(response.json()["data"]["email"])
         self.assertEqual(self.client.post(PREFIX + "/auth/login", json={
-            "email": "admin@example.test", "password": "wrong",
+            "username": "new.admin", "password": "Test-only-password-123",
+        }).status_code, 200)
+        self.assertEqual(self.client.post(PREFIX + "/auth/login", json={
+            "username": "admin", "password": "Test-only-password-123",
         }).status_code, 401)
+
+        self.post("/users", {
+            "name": "Member",
+            "username": "member",
+            "password": "Member-password-123",
+        })
+        duplicate = self.client.patch(PREFIX + "/auth/profile", json={
+            "username": "MEMBER",
+        })
+        self.assertEqual(duplicate.status_code, 409)
+
+    def test_admin_password_reset_returns_one_time_password_and_revokes_sessions(self):
+        member = self.post("/users", {
+            "name": "Member",
+            "username": "member",
+            "password": "Member-password-123",
+        })
+        login = self.post("/auth/login", {
+            "username": "member",
+            "password": "Member-password-123",
+        }, 200)
+        old_headers = {"Authorization": "Bearer " + login["access_token"]}
+        reset = self.client.post(PREFIX + f"/users/{member['id']}/password-reset", json={})
+        self.assertEqual(reset.status_code, 200, reset.text)
+        temporary_password = reset.json()["data"]["temporary_password"]
+        self.assertGreaterEqual(len(temporary_password), 10)
+        self.assertEqual(self.client.get(PREFIX + "/auth/me", headers=old_headers).status_code, 401)
+        self.assertEqual(self.client.post(PREFIX + "/auth/login", json={
+            "username": "member", "password": temporary_password,
+        }).status_code, 200)
+        self.assertEqual(self.client.post(
+            PREFIX + f"/users/{self.admin['user']['id']}/password-reset",
+            json={},
+        ).status_code, 422)
+
+        viewer = self.post("/users", {
+            "name": "Viewer",
+            "username": "viewer",
+            "password": "Viewer-password-123",
+        })
+        viewer_login = self.post("/auth/login", {
+            "username": "viewer",
+            "password": "Viewer-password-123",
+        }, 200)
+        viewer_headers = {"Authorization": "Bearer " + viewer_login["access_token"]}
+        self.assertEqual(self.client.post(
+            PREFIX + f"/users/{member['id']}/password-reset",
+            json={},
+            headers=viewer_headers,
+        ).status_code, 403)
+
+    def test_demo_data_restore_only_replaces_synthetic_dataset(self):
+        unrelated_dataset_id = self.seed_sales()
+        self.post("/reports", {
+            "name": "Keep report",
+            "query": {"dataset_id": unrelated_dataset_id, "aggregation": "sum", "field": "amount"},
+        })
+        with (
+            patch("routes.api.DEMO_MODE", True),
+            patch("routes.api.DEMO_USERNAME", "portfolio-demo"),
+            patch("routes.api.DEMO_EMAIL", None),
+            patch("routes.api.DEMO_PASSWORD", "Public-demo-password-123"),
+        ):
+            created = self.client.post(PREFIX + "/users/demo", json={})
+            self.assertEqual(created.status_code, 201, created.text)
+            demo_user_id = created.json()["data"]["user"]["id"]
+            restored = self.client.post(PREFIX + "/users/demo/restore-data", json={})
+            self.assertEqual(restored.status_code, 200, restored.text)
+            self.assertTrue(restored.json()["data"]["created"])
+            self.assertEqual(restored.json()["data"]["records"], 36)
+
+            with SessionLocal() as db:
+                from services.demo import DEMO_DATASET_DESCRIPTION
+                demo_dataset = db.scalar(select(Dataset).where(
+                    Dataset.created_by == demo_user_id,
+                    Dataset.description == DEMO_DATASET_DESCRIPTION,
+                ))
+                sample_job = db.scalar(select(IngestionJob).where(
+                    IngestionJob.dataset_id == demo_dataset.id,
+                ))
+                db.add(DataRecord(
+                    dataset_id=demo_dataset.id,
+                    job_id=sample_job.id,
+                    fingerprint="d" * 64,
+                    data={"data": "extra"},
+                ))
+                db.add(BackgroundTask(
+                    kind="import",
+                    status="queued",
+                    dataset_id=demo_dataset.id,
+                    created_by=demo_user_id,
+                ))
+                db.commit()
+                demo_dataset_id = demo_dataset.id
+
+            blocked = self.client.post(PREFIX + "/users/demo/restore-data", json={})
+            self.assertEqual(blocked.status_code, 409)
+            with SessionLocal() as db:
+                task = db.scalar(select(BackgroundTask).where(
+                    BackgroundTask.dataset_id == demo_dataset_id,
+                ))
+                db.delete(task)
+                db.commit()
+
+            restored = self.client.post(PREFIX + "/users/demo/restore-data", json={})
+            self.assertEqual(restored.status_code, 200, restored.text)
+            self.assertFalse(restored.json()["data"]["created"])
+            self.assertEqual(restored.json()["data"]["records"], 36)
+
+        with SessionLocal() as db:
+            self.assertEqual(db.scalar(select(func.count(DataRecord.id)).where(
+                DataRecord.dataset_id == demo_dataset_id,
+            )), 36)
+            self.assertEqual(db.scalar(select(func.count(DataRecord.id)).where(
+                DataRecord.dataset_id == unrelated_dataset_id,
+            )), 3)
+            self.assertEqual(db.scalar(select(func.count(Report.id))), 1)
+
+    def test_login_and_input_validation(self):
+        self.post("/auth/login", {"username": "ADMIN", "password": "Test-only-password-123"}, 200)
+        self.assertEqual(self.client.post(PREFIX + "/auth/login", json={
+            "username": "admin", "password": "wrong",
+        }).status_code, 401)
+        self.assertEqual(self.client.post(PREFIX + "/auth/login", json={
+            "email": "admin@example.test", "password": "Test-only-password-123",
+        }).status_code, 422)
         response = self.client.post(PREFIX + "/auth/register", json={
-            "name": "Invalid", "email": "invalid", "password": "x",
+            "name": "Invalid", "username": "invalid username", "password": "x",
         })
         self.assertEqual(response.status_code, 422)
         self.assertIn("error", response.json())
         self.assertNotIn('"input"', response.text)
         for _ in range(16):
-            response = self.client.post(PREFIX + "/auth/login", json={"email": "x", "password": "x"})
+            response = self.client.post(PREFIX + "/auth/login", json={
+                "username": "nonexistent", "password": "x",
+            })
         self.assertEqual(response.status_code, 429)
+
+    def test_username_login_does_not_require_contact_email(self):
+        created = self.post("/users", {
+            "name": "No Email", "username": "no-email", "password": "No-email-password-123",
+        })
+        self.assertIsNone(created["email"])
+        login = self.post("/auth/login", {
+            "username": "NO-EMAIL", "password": "No-email-password-123",
+        }, 200)
+        self.assertEqual(login["user"]["username"], "no-email")
 
     def test_password_whitespace_is_preserved(self):
         self.post("/users", {
-            "name": "Member", "email": "member@example.test", "password": "  Test-only-password-123  ",
+            "name": "Member", "username": "member", "password": "  Test-only-password-123  ",
         })
         self.assertEqual(self.client.post(PREFIX + "/auth/login", json={
-            "email": "member@example.test", "password": "Test-only-password-123",
+            "username": "member", "password": "Test-only-password-123",
         }).status_code, 401)
         self.post("/auth/login", {
-            "email": "member@example.test", "password": "  Test-only-password-123  ",
+            "username": "member", "password": "  Test-only-password-123  ",
         }, 200)
 
     def test_ingestion_normalization_dedup_validation_and_persistence(self):
@@ -622,6 +936,10 @@ class DataPulseTests(unittest.TestCase):
         self.assertIn("text/csv", exported.headers["Content-Type"])
         summary = self.client.get(PREFIX + "/analytics/summary").json()["data"]
         self.assertEqual((summary["records"], summary["active_alerts"]), (4, 1))
+        self.assertEqual(
+            (summary["user_imports"], summary["analytics_queries"], summary["reports"]),
+            (2, 0, 1),
+        )
         self.assertEqual(summary["kpis"][0]["value"], 140)
 
     def test_statistical_anomalies_are_not_simulated_or_duplicated(self):

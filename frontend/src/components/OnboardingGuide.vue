@@ -11,10 +11,9 @@ function toggle() {
   localStorage.setItem(key, hidden.value ? 'hidden' : 'visible')
 }
 const steps = computed(() => [
-  { title: 'Cadastre uma fonte', to: '/sources', done: props.summary.sources > 0 },
-  { title: 'Crie seu dataset', to: '/datasets', done: props.summary.datasets > 0 },
-  { title: 'Importe dados', to: '/ingestion', done: props.summary.records > 0 },
-  { title: 'Defina seu primeiro KPI', to: '/kpis', done: props.summary.kpi_count > 0 },
+  { title: 'Importe seus dados', to: '/ingestion', done: props.summary.user_imports > 0 },
+  { title: 'Execute uma análise', to: '/analytics', done: props.summary.analytics_queries > 0 },
+  { title: 'Salve um relatório', to: '/reports', done: props.summary.reports > 0 },
 ])
 </script>
 <template>
@@ -26,7 +25,7 @@ const steps = computed(() => [
       <div>
         <h2>Primeiros passos no DataPulse</h2>
         <p class="muted small">
-          {{ steps.filter((step) => step.done).length }} de 4 etapas concluídas com dados reais.
+          {{ steps.filter((step) => step.done).length }} de {{ steps.length }} etapas concluídas.
         </p>
       </div>
       <button class="icon-button" aria-label="Ocultar guia de primeiros passos" @click="toggle">
@@ -35,6 +34,10 @@ const steps = computed(() => [
     </div>
     <p v-if="!auth.canEdit" class="muted small">
       Seu acesso é de leitura. Peça a um editor ou administrador para cadastrar e importar dados.
+    </p>
+    <p v-else class="muted small">
+      Escolha um dataset, importe seus dados, explore os resultados na central de análises e salve
+      uma consulta como relatório.
     </p>
     <ol class="onboarding-steps">
       <li v-for="(step, index) in steps" :key="step.to" :class="{ completed: step.done }">

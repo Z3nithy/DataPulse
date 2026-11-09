@@ -14,10 +14,63 @@ test('real workspace: bootstrap, import, favorites, notifications, reports, auto
   await page.goto('/dashboard')
   await page.getByRole('button', { name: 'Primeiro acesso? Configurar administrador' }).click()
   await page.getByRole('textbox', { name: 'Nome', exact: true }).fill('DEMO E2E Admin')
-  await page.getByRole('textbox', { name: 'Email', exact: true }).fill('e2e@example.test')
+  await page.getByRole('textbox', { name: 'Usuário', exact: true }).fill('e2e-admin')
+  await page
+    .getByRole('textbox', { name: 'Email de contato (opcional)', exact: true })
+    .fill('e2e@example.test')
   await page.getByRole('textbox', { name: 'Senha', exact: true }).fill('Test-only-password-123')
   await page.getByRole('button', { name: 'Cadastrar administrador', exact: true }).click()
+  await page
+    .getByRole('dialog', { name: 'Conheça o DataPulse' })
+    .getByRole('button', { name: 'Começar tour' })
+    .click()
+  await expect(
+    page.getByRole('dialog', { name: /Etapa 1: Leia o resumo do workspace/ }),
+  ).toBeVisible()
+  await expect(page.locator('[data-tour="dashboard"]')).toBeVisible()
+  await page.getByRole('button', { name: 'Próximo' }).click()
+  await expect(page).toHaveURL(/\/sources$/)
+  await expect(
+    page.getByRole('dialog', { name: /Etapa 2: Conecte a origem dos dados/ }),
+  ).toBeVisible()
+  await page.getByRole('button', { name: 'Sair', exact: true }).click()
+  await page.getByRole('link', { name: 'Visão geral', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Primeiros passos no DataPulse' })).toBeVisible()
+
+  await page.getByRole('link', { name: 'Configurações', exact: true }).click()
+  const profilePanel = page.locator('.panel').filter({
+    has: page.getByRole('heading', { name: 'Meu perfil', exact: true }),
+  })
+  await profilePanel
+    .getByRole('textbox', { name: 'Usuário', exact: true })
+    .fill('e2e-admin-updated')
+  await profilePanel
+    .getByRole('textbox', { name: 'Email de contato (opcional)', exact: true })
+    .fill('')
+  await profilePanel.getByRole('button', { name: 'Salvar perfil', exact: true }).click()
+  await expect(page.getByText('Perfil atualizado.', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Criar conta pública', exact: true }).click()
+  await expect(page.getByText('Disponível no GUIA', { exact: true })).toBeVisible()
+  await page.getByRole('button', { name: 'Restaurar dados de demonstração', exact: true }).click()
+  await page.getByRole('button', { name: 'Confirmar alteração', exact: true }).click()
+  await expect(
+    page.getByText(/36 registros sintéticos restaurados/, { exact: false }),
+  ).toBeVisible()
+  const publicPage = await page.context().newPage()
+  await publicPage.goto('/reports')
+  await publicPage.getByRole('button', { name: 'GUIA' }).click()
+  const demoGuide = publicPage.getByRole('dialog', { name: 'Acesso de demonstração' })
+  await expect(demoGuide.getByText('demo', { exact: true })).toBeVisible()
+  await expect(demoGuide.getByText('Portfolio-demo-password-123')).toBeVisible()
+  await demoGuide.getByRole('button', { name: 'Preencher acesso demo' }).click()
+  await publicPage.getByRole('button', { name: 'Entrar no workspace', exact: true }).click()
+  await publicPage
+    .getByRole('dialog', { name: 'Conheça o DataPulse' })
+    .getByRole('button', { name: 'Agora não' })
+    .click()
+  await expect(publicPage.getByRole('heading', { name: 'Relatorios', exact: true })).toBeVisible()
+  await publicPage.close()
+  await page.getByRole('link', { name: 'Visão geral', exact: true }).click()
 
   await page.getByRole('link', { name: 'Fontes de dados', exact: true }).click()
   await page.getByRole('textbox', { name: 'Nome', exact: true }).fill('DEMO CSV')
@@ -141,7 +194,9 @@ test('real workspace: bootstrap, import, favorites, notifications, reports, auto
   await page.getByLabel('Senha atual').fill('Test-only-password-123')
   await page.getByLabel('Nova senha').fill('Another-test-password-456')
   await page.getByRole('button', { name: 'Atualizar senha', exact: true }).click()
-  await expect(page.getByText('Senha atualizada. As outras sessoes foram encerradas.')).toBeVisible()
+  await expect(
+    page.getByText('Senha atualizada. As outras sessoes foram encerradas.'),
+  ).toBeVisible()
   const token = await page.evaluate(() => sessionStorage.getItem('datapulse-token'))
   expect(token).not.toBe(oldAdminToken)
   const revoked = await page.request.get(`${api}/auth/me`, {
@@ -150,14 +205,42 @@ test('real workspace: bootstrap, import, favorites, notifications, reports, auto
   expect(revoked.status()).toBe(401)
   const member = await page.request.post(`${api}/users`, {
     headers: { Authorization: `Bearer ${token}` },
-    data: { name: 'DEMO Reader', email: 'reader@example.test', password: 'Test-only-password-123' },
+    data: {
+      name: 'DEMO Reader',
+      username: 'reader',
+      email: 'reader@example.test',
+      password: 'Test-only-password-123',
+    },
   })
   expect(member.status()).toBe(201)
+  await page.goto('/settings')
+  const memberRow = page.getByRole('row').filter({ hasText: 'reader' })
+  await memberRow.getByRole('button', { name: 'Redefinir senha', exact: true }).click()
+  await page
+    .getByRole('dialog', { name: 'Redefinir senha do membro?' })
+    .getByRole('button', { name: 'Confirmar alteração', exact: true })
+    .click()
+  const temporaryPassword = page.getByRole('dialog', {
+    name: 'Senha provisória — copie agora',
+  })
+  await expect(temporaryPassword).toBeVisible()
+  const generatedPassword = await temporaryPassword.locator('.temporary-password').textContent()
+  expect(generatedPassword.length).toBeGreaterThanOrEqual(10)
+  await temporaryPassword.getByRole('button', { name: 'Entendi e ocultar' }).click()
+  await expect(temporaryPassword).not.toBeVisible()
+  const temporaryLogin = await page.request.post(`${api}/auth/login`, {
+    data: { username: 'reader', password: generatedPassword },
+  })
+  expect(temporaryLogin.status()).toBe(200)
   await page.evaluate(() => sessionStorage.removeItem('datapulse-token'))
   await page.reload()
-  await page.getByRole('textbox', { name: 'Email', exact: true }).fill('reader@example.test')
-  await page.getByRole('textbox', { name: 'Senha', exact: true }).fill('Test-only-password-123')
+  await page.getByRole('textbox', { name: 'Usuário', exact: true }).fill('reader')
+  await page.getByRole('textbox', { name: 'Senha', exact: true }).fill(generatedPassword)
   await page.getByRole('button', { name: 'Entrar no workspace', exact: true }).click()
+  await page
+    .getByRole('dialog', { name: 'Conheça o DataPulse' })
+    .getByRole('button', { name: 'Agora não' })
+    .click()
   await expect(page.getByRole('heading', { name: 'Configuracoes', exact: true })).toBeVisible()
   await page.goto('/reports')
   await expect(page.getByRole('heading', { name: 'Relatorios', exact: true })).toBeVisible()
@@ -179,5 +262,6 @@ test('real workspace: bootstrap, import, favorites, notifications, reports, auto
       })
     ).status(),
   ).toBe(401)
+
   expect(errors).toEqual([])
 })

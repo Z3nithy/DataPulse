@@ -1,4 +1,5 @@
 import logging
+import secrets
 import threading
 import time
 from collections import defaultdict, deque
@@ -6,10 +7,10 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import Response
-from sqlalchemy import func, inspect, select
+from sqlalchemy import func, inspect, or_, select
 from sqlalchemy.orm import Session
 
-from core.config import MAX_IMPORT_BYTES
+from core.config import DEMO_EMAIL, DEMO_MODE, DEMO_PASSWORD, DEMO_USERNAME, MAX_IMPORT_BYTES
 from core.jwt import criar_token_acesso
 from core.senha_hash import criar_hash_senha, verificar_senha
 from database import get_db
@@ -20,9 +21,12 @@ from models import (
 )
 from schemas.datapulse import (
     AlertInput, AnalyticsQuery, DatasetInput, DatasetMetadata, KPIInput, Login, PasswordChange,
-    Register, ReportInput, RoleUpdate, SourceInput,
+    ProfileUpdate, Register, ReportInput, RoleUpdate, SourceInput,
 )
 from services.analytics import evaluate_alert, execute_query, get_dataset, trends
+from services.demo import (
+    DEMO_JOB_FILENAME, DemoDataRestoreInProgress, create_demo_data, restore_demo_data,
+)
 from services.ingestion import check_api_url, run_import
 from services.events import audit, notify
 from services.reports import report_csv
@@ -42,11 +46,23 @@ def serialize(entity) -> dict:
             if isinstance(value, datetime) and value.tzinfo is None:
                 value = value.replace(tzinfo=timezone.utc)
             result[column.key] = value
+    if isinstance(entity, User):
+        result["is_public_demo"] = entity.bootstrap_key == "demo"
     return result
 
 
 def ok(data, meta: dict | None = None) -> dict:
     return {"data": data, "meta": meta or {}}
+
+
+def demo_account_was_created_by_admin(db: Session, demo_user: User | None) -> bool:
+    if demo_user is None:
+        return False
+    return db.scalar(select(AuditLog.id).where(
+        AuditLog.action == "create_demo_account",
+        AuditLog.entity == "users",
+        AuditLog.entity_id == demo_user.id,
+    ).limit(1)) is not None
 
 
 def paginate(db: Session, statement, page: int, page_size: int, transform=serialize) -> dict:
@@ -84,11 +100,14 @@ def auth_throttle(request: Request):
 @router.post("/auth/register", tags=["Authentication"], status_code=201)
 def register(body: Register, request: Request, db: Session = Depends(get_db)):
     auth_throttle(request)
-    first = db.scalar(select(User.id).limit(1)) is None
+    first = db.scalar(select(User.id).where(
+        or_(User.bootstrap_key.is_(None), User.bootstrap_key != "demo")
+    ).limit(1)) is None
     if not first:
         raise HTTPException(403, "Cadastro inicial encerrado. Solicite acesso ao administrador.")
     user = User(
-        name=body.name, email=body.email, password_hash=criar_hash_senha(body.password),
+        name=body.name, username=body.username, email=body.email,
+        password_hash=criar_hash_senha(body.password),
         role="admin" if first else "viewer", bootstrap_key="initial" if first else None,
     )
     db.add(user)
@@ -100,14 +119,40 @@ def register(body: Register, request: Request, db: Session = Depends(get_db)):
 
 @router.get("/auth/setup", tags=["Authentication"])
 def setup_status(db: Session = Depends(get_db)):
-    return ok({"registration_open": db.scalar(select(User.id).limit(1)) is None})
+    registration_open = db.scalar(select(User.id).where(
+        or_(User.bootstrap_key.is_(None), User.bootstrap_key != "demo")
+    ).limit(1)) is None
+    return ok({"registration_open": registration_open})
+
+
+@router.get("/auth/demo", tags=["Authentication"])
+def demo_access(db: Session = Depends(get_db)):
+    demo_user = db.scalar(select(User).where(User.bootstrap_key == "demo").limit(1))
+    available = (
+        DEMO_MODE
+        and demo_user is not None
+        and demo_account_was_created_by_admin(db, demo_user)
+        and demo_user.active
+        and verificar_senha(DEMO_PASSWORD, demo_user.password_hash)
+    )
+    if not available:
+        return ok({"available": False})
+    return ok({
+        "available": True,
+        "username": DEMO_USERNAME,
+        "password": DEMO_PASSWORD,
+        "role": "editor",
+    })
 
 
 @router.post("/auth/login", tags=["Authentication"])
 def login(body: Login, request: Request, db: Session = Depends(get_db)):
     auth_throttle(request)
-    user = db.scalar(select(User).where(User.email == body.email.lower()))
-    if user is None or not verificar_senha(body.password, user.password_hash) or not user.active:
+    user = db.scalar(select(User).where(User.username == body.username))
+    if (user is None or not verificar_senha(body.password, user.password_hash) or not user.active
+            or (user.bootstrap_key == "demo" and (
+                not DEMO_MODE or not demo_account_was_created_by_admin(db, user)
+            ))):
         logger.warning("Authentication rejected")
         raise HTTPException(401, "Credenciais invalidas")
     audit(db, user.id, "login", "users", user.id)
@@ -123,6 +168,8 @@ def me(user: User = Depends(get_usuario_atual)):
 @router.post("/auth/password", tags=["Authentication"])
 def change_password(body: PasswordChange, db: Session = Depends(get_db),
                     user: User = Depends(get_usuario_atual)):
+    if user.bootstrap_key == "demo":
+        raise HTTPException(403, "A senha da conta publica e gerenciada pelo administrador")
     if not verificar_senha(body.current_password, user.password_hash):
         raise HTTPException(400, "Senha atual incorreta")
     if body.current_password == body.new_password:
@@ -133,6 +180,49 @@ def change_password(body: PasswordChange, db: Session = Depends(get_db),
     db.commit()
     db.refresh(user)
     return ok({"access_token": criar_token_acesso(user.id, user.token_version), "token_type": "bearer"})
+
+
+@router.patch("/auth/profile", tags=["Authentication"])
+def update_profile(body: ProfileUpdate, db: Session = Depends(get_db),
+                   user: User = Depends(get_usuario_atual)):
+    username_owner = db.scalar(select(User.id).where(
+        User.username == body.username, User.id != user.id,
+    ).limit(1))
+    if username_owner is not None:
+        raise HTTPException(409, "Este nome de usuario ja esta em uso")
+    if "email" in body.model_fields_set and body.email:
+        email_owner = db.scalar(select(User.id).where(
+            User.email == body.email, User.id != user.id,
+        ).limit(1))
+        if email_owner is not None:
+            raise HTTPException(409, "Este email de contato ja esta em uso")
+
+    user.username = body.username
+    if "email" in body.model_fields_set:
+        user.email = body.email
+    audit(db, user.id, "update_profile", "users", user.id)
+    db.commit()
+    db.refresh(user)
+    return ok(serialize(user))
+
+
+@router.post("/users/{user_id}/password-reset", tags=["Team"])
+def reset_user_password(user_id: int, db: Session = Depends(get_db),
+                        user: User = Depends(require_admin)):
+    target = db.get(User, user_id)
+    if target is None:
+        raise HTTPException(404, "Usuario nao encontrado")
+    if target.id == user.id:
+        raise HTTPException(422, "Use a opcao Alterar senha para sua propria conta")
+    if target.bootstrap_key == "demo":
+        raise HTTPException(422, "A senha da conta publica e gerenciada pelo administrador")
+
+    temporary_password = secrets.token_urlsafe(12)
+    target.password_hash = criar_hash_senha(temporary_password)
+    target.token_version += 1
+    audit(db, user.id, "reset_password", "users", target.id)
+    db.commit()
+    return ok({"temporary_password": temporary_password})
 
 
 @router.post("/auth/logout", tags=["Authentication"])
@@ -149,10 +239,99 @@ def users(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100),
     return paginate(db, select(User).order_by(User.id), page, page_size)
 
 
+@router.get("/users/demo", tags=["Team"])
+def demo_account_status(db: Session = Depends(get_db), user: User = Depends(require_admin)):
+    demo_user = db.scalar(select(User).where(User.bootstrap_key == "demo").limit(1))
+    available = (
+        DEMO_MODE
+        and demo_user is not None
+        and demo_account_was_created_by_admin(db, demo_user)
+        and demo_user.active
+        and verificar_senha(DEMO_PASSWORD, demo_user.password_hash)
+    )
+    return ok({
+        "enabled": DEMO_MODE,
+        "created": demo_account_was_created_by_admin(db, demo_user),
+        "active": demo_user.active if demo_user is not None else False,
+        "available": available,
+        "username": DEMO_USERNAME if DEMO_MODE else None,
+        "email": DEMO_EMAIL if DEMO_MODE else None,
+    })
+
+
+@router.post("/users/demo", tags=["Team"], status_code=201)
+def create_demo_account(db: Session = Depends(get_db), user: User = Depends(require_admin)):
+    if not DEMO_MODE:
+        raise HTTPException(409, "Ative DEMO_MODE para criar a conta publica")
+    demo_user = db.scalar(select(User).where(User.bootstrap_key == "demo").limit(1))
+    if demo_account_was_created_by_admin(db, demo_user):
+        raise HTTPException(409, "A conta publica ja foi criada")
+    username_owner = db.scalar(select(User).where(User.username == DEMO_USERNAME).limit(1))
+    if username_owner is not None and username_owner.id != (demo_user.id if demo_user else None):
+        raise HTTPException(409, "O usuario configurado para a conta publica ja esta em uso")
+    if DEMO_EMAIL:
+        email_owner = db.scalar(select(User).where(User.email == DEMO_EMAIL).limit(1))
+        if email_owner is not None and email_owner.id != (demo_user.id if demo_user else None):
+            raise HTTPException(409, "O email de contato da conta publica ja esta em uso")
+
+    if demo_user is None:
+        demo_user = User(
+            name="DataPulse Demo",
+            username=DEMO_USERNAME,
+            email=DEMO_EMAIL,
+            password_hash=criar_hash_senha(DEMO_PASSWORD),
+            role="editor",
+            active=True,
+            bootstrap_key="demo",
+        )
+        db.add(demo_user)
+    else:
+        demo_user.name = "DataPulse Demo"
+        demo_user.username = DEMO_USERNAME
+        demo_user.email = DEMO_EMAIL
+        demo_user.password_hash = criar_hash_senha(DEMO_PASSWORD)
+        demo_user.role = "editor"
+        demo_user.active = True
+        demo_user.token_version += 1
+    db.flush()
+    sample_data_created = create_demo_data(db, demo_user.id)
+    audit(db, user.id, "create_demo_account", "users", demo_user.id)
+    db.commit()
+    db.refresh(demo_user)
+    return ok({
+        "user": serialize(demo_user),
+        "available": True,
+        "sample_data_created": sample_data_created,
+    })
+
+
+@router.post("/users/demo/restore-data", tags=["Team"])
+def restore_demo_workspace_data(db: Session = Depends(get_db), user: User = Depends(require_admin)):
+    demo_user = db.scalar(select(User).where(User.bootstrap_key == "demo").limit(1))
+    if not demo_account_was_created_by_admin(db, demo_user):
+        raise HTTPException(404, "A conta publica ainda nao foi criada pelo administrador")
+    try:
+        created, records = restore_demo_data(db, demo_user.id)
+    except DemoDataRestoreInProgress:
+        db.rollback()
+        raise HTTPException(
+            409,
+            "Ha uma tarefa de importacao em andamento neste dataset. Aguarde a conclusao antes de restaurar.",
+        )
+    audit(db, user.id, "restore_demo_data", "users", demo_user.id)
+    db.commit()
+    return ok({"created": created, "records": records})
+
+
 @router.post("/users", tags=["Team"], status_code=201)
 def create_user(body: Register, db: Session = Depends(get_db), user: User = Depends(require_admin)):
+    if db.scalar(select(User.id).where(User.username == body.username).limit(1)):
+        raise HTTPException(409, "Este nome de usuario ja esta em uso")
+    if body.email and db.scalar(select(User.id).where(User.email == body.email).limit(1)):
+        raise HTTPException(409, "Este email de contato ja esta em uso")
     return save(db, User(
-        name=body.name, email=body.email, password_hash=criar_hash_senha(body.password),
+        name=body.name, username=body.username, email=body.email,
+        password_hash=criar_hash_senha(body.password),
         role="viewer", active=True,
     ), user)
 
@@ -163,6 +342,8 @@ def update_user(user_id: int, body: RoleUpdate, db: Session = Depends(get_db),
     target = db.get(User, user_id)
     if target is None:
         raise HTTPException(404, "Usuario nao encontrado")
+    if target.bootstrap_key == "demo" and body.role != "editor":
+        raise HTTPException(422, "A conta publica deve permanecer como editora")
     if target.id == user.id and (body.role != "admin" or not body.active):
         raise HTTPException(422, "Nao e permitido remover seu proprio acesso de administrador")
     if target.role != body.role or target.active != body.active:
@@ -299,13 +480,20 @@ def query(body: AnalyticsQuery, db: Session = Depends(get_db), user: User = Depe
 def summary(db: Session = Depends(get_db), user: User = Depends(get_usuario_atual)):
     def count(model):
         return db.scalar(select(func.count()).select_from(model))
+    user_imports = db.scalar(select(func.count()).select_from(IngestionJob).where(
+        IngestionJob.filename != DEMO_JOB_FILENAME,
+        IngestionJob.status.in_(("completed", "completed_with_errors")),
+        IngestionJob.imported_rows > 0,
+    ))
     kpis = [{
         **serialize(kpi),
         "value": execute_query(db, AnalyticsQuery.model_validate(kpi.query))["value"],
     } for kpi in db.scalars(select(KPI).order_by(KPI.id.desc()).limit(6))]
     return ok({
         "records": count(DataRecord), "sources": count(DataSource), "datasets": count(Dataset),
-        "imports": count(IngestionJob), "kpi_count": count(KPI), "kpis": kpis,
+        "imports": count(IngestionJob), "user_imports": user_imports,
+        "analytics_queries": count(AnalyticsResult), "reports": count(Report),
+        "kpi_count": count(KPI), "kpis": kpis,
         "active_alerts": db.scalar(select(func.count()).select_from(Alert).where(
             Alert.enabled.is_(True), Alert.triggered.is_(True),
         )),
