@@ -3,6 +3,9 @@
 Este diretório contém a interface web do DataPulse, construída com Vue 3 e Vite.
 Ela conversa com a API descrita no [README do backend](../backend/README.md).
 
+O projeto está sob a [licença MIT](../LICENSE); consulte o arquivo para ver os
+termos de uso e redistribuição.
+
 - [Voltar ao início rápido do projeto](../README.md)
 - [Documentação do backend e da API](../backend/README.md)
 
@@ -165,6 +168,72 @@ O proxy de desenvolvimento do Vite não é incluído no build de produção. Em
 produção, configure um proxy no servidor ou defina `VITE_API_URL` durante o
 build e autorize a origem exata no CORS do backend. A hospedagem da interface,
 sozinha, não executa a API nem o worker.
+
+### Publicar o frontend no Render
+
+O frontend pode ser hospedado como um **Static Site**. A documentação oficial do
+Render para Vue usa a pasta `dist` como diretório publicado e recomenda uma
+regra de rewrite para rotas do Vue Router.
+
+1. Envie o branch `main` para o GitHub e entre no
+   [Render Dashboard](https://dashboard.render.com/).
+2. Selecione **New > Static Site** e conecte o repositório
+   `Z3nithy/DataPulse`. Autorize o acesso ao GitHub, se solicitado.
+3. Configure os campos:
+
+   | Campo no Render | Valor |
+   |---|---|
+   | **Name** | `datapulse-frontend` (ou outro nome disponível) |
+   | **Branch** | `main` |
+   | **Root Directory** | `frontend` |
+   | **Build Command** | `npm ci && npm run build` |
+   | **Publish Directory** | `dist` |
+
+4. Em **Environment**, adicione `NODE_VERSION` com o valor `22.18.0` para usar
+   uma versão compatível com `frontend/package.json`.
+5. Selecione **Create Static Site** e aguarde o primeiro deploy.
+6. Abra o endereço `https://<nome-do-site>.onrender.com` que o Render mostrar.
+   O deploy automático pode atualizar o site quando houver novos pushes para o
+   branch `main`.
+
+#### Habilitar as rotas do Vue Router
+
+No serviço do Render, abra **Redirects/Rewrites** e adicione:
+
+| Campo | Valor |
+|---|---|
+| **Source** | `/*` |
+| **Destination** | `/index.html` |
+| **Action** | `Rewrite` |
+
+Essa regra serve o `index.html` quando alguém abre ou atualiza diretamente uma
+rota da aplicação, por exemplo `/settings`. Sem ela, o navegador pode receber
+404 nessas rotas. O Render preserva os arquivos existentes, como JavaScript e
+CSS, antes de aplicar a regra.
+
+#### Conectar à API
+
+O frontend hospedado precisa da URL pública da API. Como o backend ainda é uma
+etapa separada, o primeiro deploy do site estático pode mostrar a interface, mas
+login, dados e outras chamadas à API não funcionarão até essa URL ser
+configurada.
+
+Depois que a API estiver hospedada:
+
+1. No serviço estático do Render, abra **Environment** e adicione ou atualize
+   `VITE_API_URL` com a URL base da API, incluindo o prefixo. Exemplo:
+   `https://datapulse-api.onrender.com/api/v1`.
+2. Salve a alteração e faça um novo deploy para que o Vite incorpore a variável
+   ao build.
+3. No backend, inclua a origem exata do site estático em `CORS_ORIGINS`, por
+   exemplo `https://datapulse-frontend.onrender.com`, e reinicie/reimplante a API.
+4. Acesse `/ready` no endereço da API para confirmar que ela está pronta antes
+   de testar o login.
+
+`VITE_API_URL` é incluída no JavaScript público e deve conter somente o endereço
+da API. **Não coloque senhas, tokens ou outras credenciais nessa variável.**
+O endereço real do backend, `CORS_ORIGINS` e a persistência do banco serão
+definidos na etapa de hospedagem do backend.
 
 ## Estrutura do código
 

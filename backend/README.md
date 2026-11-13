@@ -4,6 +4,9 @@ Este diretório contém a API FastAPI, o banco SQLite, as migrations Alembic e o
 worker que processa importações e agendamentos em segundo plano. A interface web
 fica em [`../frontend`](../frontend/README.md).
 
+O projeto está sob a [licença MIT](../LICENSE); consulte o arquivo para ver os
+termos de uso e redistribuição.
+
 - [Voltar ao início rápido do projeto](../README.md)
 - [Documentação da interface](../frontend/README.md)
 

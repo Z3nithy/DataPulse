@@ -4,6 +4,9 @@ O **DataPulse** é um projeto de portfólio para importar dados, explorar indica
 acompanhar tendências. Ele roda localmente com uma API FastAPI, uma interface Vue,
 um banco SQLite e um worker para tarefas em segundo plano.
 
+O código está disponível sob a [licença MIT](LICENSE). Consulte o arquivo para
+conhecer os termos de uso e redistribuição.
+
 > **Importante:** este projeto é demonstrativo. Todas as contas do mesmo banco
 > compartilham um único workspace. Não use dados confidenciais nem considere o
 > projeto pronto para uso empresarial sem uma avaliação de segurança.
@@ -190,7 +193,8 @@ Antes de enviar alterações ao GitHub:
    valores no ambiente local ou no gerenciador de segredos da hospedagem.
 3. Use apenas dados sintéticos em capturas de tela e demonstrações.
 4. Revise avisos de dependências e segurança.
-5. Escolha uma licença antes de permitir que outras pessoas reutilizem o código.
+5. Leia os termos da [licença MIT](LICENSE) antes de reutilizar ou redistribuir
+   o código.
 
 ## Limites e segurança
 
